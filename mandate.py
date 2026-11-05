@@ -31,7 +31,7 @@ RESERVED = (
 )
 MESSAGES = {"BLOCK": "Not ready", "ESCALATE": "Needs the owner", "VERIFY": "Waiting for proof"}
 ISSUE_LINE = re.compile(r"Issue: #([1-9][0-9]*)")
-BULLET = re.compile(r"(?:[-*+]|[0-9]+[.)])\s+(.*)")
+BULLET = re.compile(r"(?:[-*+]|[0-9]+[.)])(?:\s+(.*))?")
 CRITERION = re.compile(r"(.*\S)\s+(?:Test: `(test_\w+)`|Judge only)")
 OUT_OF_SCOPE = "out of scope"
 
@@ -189,23 +189,30 @@ def load_intent(text: str, tests_source: str) -> Intent:
     issues = []
     section = ""
     criteria = []
+    in_code_block = False
     for line in text.splitlines():
         stripped = line.strip()
-        if title is None and line.startswith("# "):
+        if stripped.startswith(("```", "~~~")):
+            in_code_block = not in_code_block
+        elif in_code_block:
+            continue
+        elif title is None and line.startswith("# "):
             title = line[2:].strip()
         elif line.startswith("## "):
             section = line[3:].strip()
-        elif issue := ISSUE_LINE.fullmatch(stripped):
-            issues.append(int(issue[1]))
+        elif stripped.lower().startswith("issue:"):
+            issues.append(ISSUE_LINE.fullmatch(stripped))
         elif (bullet := BULLET.fullmatch(stripped)) and section.lower() != OUT_OF_SCOPE:
-            criterion = CRITERION.fullmatch(bullet[1])
+            criterion = CRITERION.fullmatch(bullet[1] or "")
             if not criterion:
                 raise IntentError(f"needs a test or Judge only: {stripped}")
             criteria.append(Criterion(section, criterion[1], criterion[2]))
 
+    if in_code_block:
+        raise IntentError("has a code block that never closes")
     if not title:
         raise IntentError("needs a title")
-    if len(issues) != 1:
+    if len(issues) != 1 or issues[0] is None:
         raise IntentError("needs exactly one Issue line, such as Issue: #2")
     named = {criterion.test for criterion in criteria} - {None}
     if not named:
@@ -213,7 +220,7 @@ def load_intent(text: str, tests_source: str) -> Intent:
     missing = sorted(named - _test_functions(tests_source))
     if missing:
         raise IntentError(f"names tests that don't exist: {', '.join(missing)}")
-    return Intent(title, issues[0], tuple(criteria))
+    return Intent(title, int(issues[0][1]), tuple(criteria))
 
 
 def _test_functions(source: str) -> set[str]:

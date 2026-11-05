@@ -55,7 +55,7 @@ Issue: #2
 Search, sorting and paging.
 ```
 
-`load_intent` refuses an intent that breaks this, including one naming a test that doesn't exist or naming no tests at all.
+Code blocks are free text too. `load_intent` refuses an intent that breaks this, including one naming a test that doesn't exist, naming no tests at all, or with a code block that never closes.
 
 ## Known limits
 
