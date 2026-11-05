@@ -1,4 +1,5 @@
 import base64
+import json
 
 import pytest
 
@@ -46,8 +47,15 @@ class Fake:
         self.files = files or [{"filename": "tasks_api.py"}, {"filename": "README.md"}]
         self.check_conclusion = check_conclusion
         self.delegation = delegation
+        self.pr_commits = [{"sha": SHA}]
+        self.decisions = {}
 
     def get(self, path):
+        for sha, runs in self.decisions.items():
+            if path == f"repos/{REPO}/commits/{sha}/check-runs?check_name=mandate%2Fdecision&filter=all&per_page=100":
+                return {"check_runs": runs}
+        if "check_name=" in path:
+            return {"check_runs": []}
         pages = {
             f"repos/{REPO}/commits/{SHA}/pulls": self.prs,
             f"repos/{REPO}/pulls/7": pr(changed_files=len(self.files)),
@@ -78,6 +86,7 @@ class Fake:
                     },
                 ],
             },
+            f"repos/{REPO}/pulls/7/commits?per_page=100": self.pr_commits,
             "repos/ImranAdan/mandate-delegation/commits/main": {"sha": DELEGATION_COMMIT},
             f"repos/ImranAdan/mandate-delegation/contents/repositories/app.toml?ref={DELEGATION_COMMIT}": encoded(self.delegation),
         }
@@ -279,8 +288,18 @@ REAL_JUDGE = DELEGATION.replace('judge_model = "none"', 'judge_model = "a-model"
 DIFF = "+a change\n"
 
 
-def judged(delegation=REAL_JUDGE, reply='{"score": 0.9, "reason": "Fine."}', linked=(2,), check="success", diff=DIFF):
+def judged(
+    delegation=REAL_JUDGE,
+    reply='{"score": 0.9, "reason": "Fine."}',
+    linked=(2,),
+    check="success",
+    diff=DIFF,
+    earlier=None,
+    commits=(SHA,),
+):
     fake = Fake(delegation=delegation, check_conclusion=check)
+    fake.decisions = earlier or {}
+    fake.pr_commits = [{"sha": sha} for sha in commits]
     asked = []
 
     def ask(model, prompt):
@@ -351,4 +370,107 @@ def test_no_usable_answer_means_no_score(kwargs, shown):
 
 def test_an_oversized_change_is_never_sent():
     _, asked = judged(diff="x" * (mandate.MAX_DIFF_CHARS + 1))
+    assert asked == []
+
+
+# --- one score per commit, and the refusal limit ------------------------------
+
+OTHER = "e" * 40
+
+
+def receipt(score=0.4, commit=SHA, model="a-model", intent_commit=INTENT_COMMIT, pr=7, code="JUDGE_SCORE_LOW", response="earlier"):
+    record = {
+        "pr": pr,
+        "commit": commit,
+        "judge_model": model,
+        "intent_commit": intent_commit,
+        "judge_score": score,
+        "judge_response": response,
+        "reasons": [{"code": code, "detail": "x"}] if code else [],
+    }
+    text = f"<details>\n\n```json\n{json.dumps(record)}\n```\n\n</details>\n"
+    return {"app": {"slug": "github-actions"}, "output": {"text": text}}
+
+
+def test_a_commit_keeps_its_first_score():
+    decision, asked = judged(earlier={SHA: [receipt(score=0.4)]}, reply='{"score": 0.99, "reason": "Rerolled."}')
+    assert asked == []
+    assert decision.outcome == "BLOCK"
+    assert decision.judge_score == 0.4
+    assert decision.judge_response == "earlier"
+
+
+def test_the_newest_earlier_score_is_used():
+    newest, oldest = receipt(score=0.9, code=None, response="newest"), receipt(score=0.4, response="oldest")
+    decision, asked = judged(earlier={SHA: [newest, oldest]})
+    assert asked == []
+    assert decision.judge_score == 0.9
+
+
+@pytest.mark.parametrize(
+    "earlier",
+    [
+        receipt(model="another-model"),
+        receipt(intent_commit="f" * 40),
+        receipt(score=None),
+        receipt(pr=8),
+        {"app": {"slug": "another-app"}, "output": {"text": receipt()["output"]["text"]}},
+        {"app": {"slug": "github-actions"}, "output": {"text": "not a receipt"}},
+        {"app": {"slug": "github-actions"}, "output": {}},
+    ],
+)
+def test_a_score_only_carries_over_when_it_applies(earlier):
+    decision, asked = judged(earlier={SHA: [earlier]})
+    assert len(asked) == 1
+    assert decision.judge_score == 0.9
+
+
+def test_a_new_commit_gets_a_new_score():
+    decision, asked = judged(earlier={OTHER: [receipt(commit=OTHER, score=0.4)]}, commits=(OTHER, SHA))
+    assert len(asked) == 1
+    assert decision.judge_score == 0.9
+
+
+def refused(*shas):
+    return {sha: [receipt(commit=sha)] for sha in shas}
+
+
+def test_the_third_refusal_goes_to_the_owner():
+    first, second = "1" * 40, "2" * 40
+    decision, asked = judged(
+        earlier=refused(first, second), commits=(first, second, SHA), reply='{"score": 0.4, "reason": "Still bad."}'
+    )
+    assert len(asked) == 1
+    assert decision.outcome == "ESCALATE"
+    assert [reason.code for reason in decision.reasons] == ["JUDGE_REFUSALS"]
+
+
+def test_after_three_refusals_the_model_is_not_asked_again():
+    first, second, third = "1" * 40, "2" * 40, "3" * 40
+    decision, asked = judged(earlier=refused(first, second, third), commits=(first, second, third, SHA))
+    assert asked == []
+    assert decision.outcome == "ESCALATE"
+    assert decision.judge_score is None
+
+
+def test_reruns_on_one_commit_count_as_one_refusal():
+    first = "1" * 40
+    earlier = {first: [receipt(commit=first), receipt(commit=first), receipt(commit=first)]}
+    decision, asked = judged(earlier=earlier, commits=(first, SHA), reply='{"score": 0.4, "reason": "Bad."}')
+    assert len(asked) == 1
+    assert decision.outcome == "BLOCK"
+
+
+def test_earlier_passes_do_not_count_as_refusals():
+    first, second, third = "1" * 40, "2" * 40, "3" * 40
+    passed = {sha: [receipt(commit=sha, score=0.9, code=None)] for sha in (first, second, third)}
+    decision, asked = judged(earlier=passed, commits=(first, second, third, SHA))
+    assert len(asked) == 1
+    assert decision.outcome == "AUTHORIZE"
+
+
+def test_an_escalated_refusal_counts_too():
+    first, second, third = "1" * 40, "2" * 40, "3" * 40
+    earlier = refused(first, second) | {third: [receipt(commit=third, code="JUDGE_REFUSALS")]}
+    _, asked = judged(earlier=earlier, commits=(first, second, third, SHA))
     assert asked == []

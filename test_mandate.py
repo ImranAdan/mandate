@@ -45,7 +45,14 @@ PASSED = mandate.Acceptance(5, 5)
 
 
 def decide(
-    delegation=None, paths=("tasks_api.py",), checks=None, score=None, intent=BOUND, acceptance=PASSED, judge_response=None
+    delegation=None,
+    paths=("tasks_api.py",),
+    checks=None,
+    score=None,
+    intent=BOUND,
+    acceptance=PASSED,
+    judge_response=None,
+    prior_refusals=0,
 ):
     return mandate.decide(
         load(SCORING) if delegation is None else delegation,
@@ -57,6 +64,7 @@ def decide(
         acceptance=acceptance,
         judge_score=score,
         judge_response=judge_response,
+        prior_refusals=prior_refusals,
     )
 
 
@@ -362,6 +370,8 @@ def test_the_record_keeps_exact_identifiers():
         "intent_issue": 2,
         "intent_commit": INTENT_COMMIT,
         "judge_model": "some-model",
+        "acceptance_passed": 5,
+        "acceptance_total": 5,
         "judge_score": 0.92,
         "judge_response": None,
         "dry_run": False,
@@ -675,6 +685,7 @@ def test_a_refusal_reads_as_a_summary():
         "|---|---|\n"
         "| **Pull request** | #12 |\n"
         "| **Commit** | `aaaaaaa` |\n"
+        "| **Hidden tests** | 2 of 5 passed |\n"
         "| **JudgeScore** | Missing |\n"
         "| **Mode** | Dry run: nothing merges |\n"
         "| **Intent** | Issue #2 |\n"
@@ -698,6 +709,7 @@ def test_a_pass_reads_as_a_summary():
         "|---|---|\n"
         "| **Pull request** | #12 |\n"
         "| **Commit** | `aaaaaaa` |\n"
+        "| **Hidden tests** | 5 of 5 passed |\n"
         "| **JudgeScore** | 0.92 |\n"
         "| **Mode** | Live: merges when ready |\n"
         "| **Intent** | Issue #2 |\n"
@@ -713,7 +725,11 @@ def test_a_dry_run_pass_says_it_did_not_merge():
 def test_waiting_and_warnings_read_plainly():
     delegation = load(CONFIG.replace("dry_run = true", "dry_run = false"))
     summary = mandate.check_summary(decide(delegation))
-    assert summary.startswith("## ⏳ Waiting for proof\n\nJudgeScore missing.\n")
+    assert summary.startswith(
+        "## ⏳ Waiting for proof\n\n"
+        "JudgeScore missing.\n\n"
+        "Nothing has failed. This check stays red until Mandate can authorize the change.\n"
+    )
     assert "- ⏳ JudgeScore missing\n" in summary
     assert '\n### Warnings\n\n- ⚠️ judge_model is "none"; forcing dry_run to true\n' in summary
 
@@ -815,3 +831,56 @@ def test_a_response_cannot_break_out_of_its_block():
 def test_a_response_does_not_reach_the_log_line():
     decision = decide(score=0.5, judge_response='{"reason": "private words"}')
     assert "private words" not in mandate.receipt_text(decision)
+
+
+def test_a_summary_says_when_the_hidden_tests_did_not_run():
+    summary = mandate.check_summary(decide(intent=mandate.IntentUnbound("link exactly one issue"), acceptance=None))
+    assert "| **Hidden tests** | Not run |" in summary
+    record = mandate.receipt_record(decide(intent=mandate.IntentUnbound("link exactly one issue"), acceptance=None))
+    assert record["acceptance_passed"] is None
+    assert record["acceptance_total"] is None
+
+
+def test_only_waiting_says_nothing_has_failed():
+    assert "Nothing has failed" not in mandate.check_summary(decide(score=0.4))
+    assert "Nothing has failed" not in mandate.check_summary(decide(score=0.9))
+    assert "Nothing has failed" not in mandate.check_summary(decide(paths=("schema.sql",)))
+
+
+# --- the refusal limit -------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "prior, score, outcome, code, detail, kept",
+    [
+        (0, 0.4, "BLOCK", "JUDGE_SCORE_LOW", "JudgeScore 0.4 is below 0.8", 0.4),
+        (1, 0.4, "BLOCK", "JUDGE_SCORE_LOW", "JudgeScore 0.4 is below 0.8", 0.4),
+        (2, 0.4, "ESCALATE", "JUDGE_REFUSALS", "the Judge has refused this pull request 3 times", 0.4),
+        (3, None, "ESCALATE", "JUDGE_REFUSALS", "the Judge has refused this pull request 3 times", None),
+        (3, 0.99, "ESCALATE", "JUDGE_REFUSALS", "the Judge has refused this pull request 3 times", None),
+        (4, None, "ESCALATE", "JUDGE_REFUSALS", "the Judge has refused this pull request 4 times", None),
+    ],
+)
+def test_the_owner_hears_after_three_refusals(prior, score, outcome, code, detail, kept):
+    decision = decide(score=score, prior_refusals=prior)
+    assert decision.outcome == outcome
+    assert codes(decision) == [code]
+    assert decision.reasons[0].detail == detail
+    assert decision.judge_score == kept
+
+
+def test_a_good_score_clears_after_earlier_refusals():
+    assert decide(score=0.9, prior_refusals=2).outcome == "AUTHORIZE"
+
+
+# --- reading a receipt back --------------------------------------------------
+
+
+def test_a_receipt_reads_back_from_the_check():
+    decision = decide(load(LIVE), score=0.92)
+    assert mandate.read_receipt(mandate.check_details(decision)) == mandate.receipt_record(decision)
+
+
+@pytest.mark.parametrize("details", ["", None, "no block", "```json\nnot json\n```", "```json\n[1]\n```"])
+def test_anything_else_is_not_a_receipt(details):
+    assert mandate.read_receipt(details) is None
