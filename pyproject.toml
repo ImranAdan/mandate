@@ -1,0 +1,17 @@
+[project]
+name = "mandate"
+version = "0.1.0"
+description = "A small merge authority: decides whether an agent's pull request may merge"
+requires-python = ">=3.12"
+dependencies = []
+
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.2.0",
+]
