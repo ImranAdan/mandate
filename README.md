@@ -57,6 +57,18 @@ Search, sorting and paging.
 
 Code blocks are free text too. `load_intent` refuses an intent that breaks this, including one naming a test that doesn't exist, naming no tests at all, or with a code block that never closes.
 
+## Finding the intent
+
+`read_intents` reads every intent for an app at one commit of the private repo, and `find_intent` picks the one that claims the issue the PR links.
+
+| The PR links | Result |
+|---|---|
+| One issue an intent claims | Judged against that intent |
+| No issue, several, or an unclaimed one | `BLOCK`, which the agent can fix |
+| An issue two intents claim, or any bad intent file | `ESCALATE`, without quoting the intent, because the message is public |
+
+A failed read never counts as having no intents. The token for that repo is short-lived and read-only, and the key behind it stays in an environment only `main` can use.
+
 ## Known limits
 
 - **Reserved paths:** these are found by path alone, so any `.github/` change comes to the owner, and SQL inside application code isn't seen.
