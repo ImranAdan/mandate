@@ -12,12 +12,25 @@ import re
 import subprocess
 import sys
 import tempfile
+import urllib.request
 from collections.abc import Callable
 
 import mandate
 
 DELEGATION_REPO = "ImranAdan/mandate-delegation"
 CHECK_NAME = "mandate/decision"
+JUDGE_URL = "http://127.0.0.1:11434/v1/chat/completions"
+JUDGE_REPLY_FORMAT = {
+    "type": "json_schema",
+    "json_schema": {
+        "name": "judgement",
+        "schema": {
+            "type": "object",
+            "properties": {"score": {"type": "number"}, "reason": {"type": "string"}},
+            "required": ["score", "reason"],
+        },
+    },
+}
 PER_PAGE = 100
 LINKED_ISSUES = """
 query($owner: String!, $name: String!, $number: Int!) {
@@ -114,6 +127,8 @@ def evaluate(
     get_private: Callable,
     linked_issues: Callable,
     run_tests: Callable,
+    read_diff: Callable,
+    ask_judge: Callable,
 ) -> mandate.Decision | None:
     """The decision for one commit, or None if no open pull request has it."""
     prs = open_prs(get, repo, sha)
@@ -135,15 +150,47 @@ def evaluate(
         except (mandate.IntentError, mandate.IntentUnbound) as error:
             intent = error
 
-    return mandate.decide(
-        delegation,
-        pr=number,
-        head_sha=sha,
-        changed_paths=changed_paths(get, repo, number),
-        checks=check_results(get, repo, sha),
-        intent=intent,
-        acceptance=acceptance,
-    )
+    paths = changed_paths(get, repo, number)
+    checks = check_results(get, repo, sha)
+
+    def decide(score: object = None, response: str | None = None) -> mandate.Decision:
+        return mandate.decide(delegation, number, sha, paths, checks, intent, acceptance, score, response)
+
+    decision = decide()
+    if [reason.code for reason in decision.reasons] != ["JUDGE_SCORE_MISSING"] or delegation.judge_model == mandate.NO_JUDGE:
+        return decision
+    return decide(*_judged(delegation, intent, number, read_diff, ask_judge))
+
+
+def _judged(
+    delegation: mandate.Delegation, intent: mandate.Intent, number: int, read_diff: Callable, ask_judge: Callable
+) -> tuple[object, str]:
+    """The score and response. Any failure gives no score, so nothing can pass by it."""
+    try:
+        diff = read_diff(number)
+    except Exception:
+        return None, "The change couldn't be read."
+    if len(diff) > mandate.MAX_DIFF_CHARS:
+        return None, "The change is too large to judge."
+    try:
+        reply = ask_judge(delegation.judge_model, mandate.judge_prompt(intent, diff))
+    except Exception:
+        return None, "The model gave no answer."
+    return mandate.read_score(reply), reply
+
+
+def ask_local_model(model: str, prompt: str) -> str:
+    """Ask a local model through its OpenAI-compatible API, downloading it first if needed."""
+    subprocess.run(["docker", "exec", "ollama", "ollama", "pull", model], capture_output=True, check=True, timeout=600)
+    body = {
+        "model": model,
+        "messages": [{"role": "system", "content": mandate.JUDGE_SYSTEM}, {"role": "user", "content": prompt}],
+        "response_format": JUDGE_REPLY_FORMAT,
+        "max_tokens": 300,
+    }
+    request = urllib.request.Request(JUDGE_URL, json.dumps(body).encode(), {"Content-Type": "application/json"})
+    with urllib.request.urlopen(request, timeout=900) as response:
+        return json.load(response)["choices"][0]["message"]["content"]
 
 
 def conclusion(outcome: str) -> str:
@@ -172,6 +219,17 @@ def _post_check(token: str, repo: str, sha: str, outcome: str, title: str, summa
         "output": {"title": title, "summary": summary, "text": details},
     }
     _gh(token, f"repos/{repo}/check-runs", "--method", "POST", "--input", "-", stdin=json.dumps(body))
+
+
+def _read_diff(token: str, repo: str, number: int) -> str:
+    done = subprocess.run(
+        ["gh", "api", "-H", "Accept: application/vnd.github.diff", f"repos/{repo}/pulls/{number}"],
+        env={**os.environ, "GH_TOKEN": token},
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return done.stdout
 
 
 def _linked_issues(token: str, repo: str, number: int) -> tuple[int, ...]:
@@ -204,6 +262,8 @@ def main() -> int:
             get_private,
             lambda number: _linked_issues(token, repo, number),
             lambda intent: run_acceptance(intent, base_url),
+            lambda number: _read_diff(token, repo, number),
+            ask_local_model,
         )
     except Refused as refused:
         _post_check(token, repo, sha, "BLOCK", f"Not ready: {refused}.", f"## ❌ Not ready\n\n{refused}.\n", "")
