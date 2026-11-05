@@ -366,3 +366,111 @@ def test_the_record_of_an_invalid_delegation_has_no_settings_to_name():
     assert record["judge_model"] is None
     assert record["dry_run"] is True
     assert record["message"] == "Needs the owner: bad."
+
+
+# --- the intent --------------------------------------------------------------
+
+INTENT = """# Filter tasks by done state
+
+Issue: #2
+
+## Feature
+
+`GET /tasks` accepts an optional `done` filter.
+
+- `done=false` returns only open tasks. Test: `test_open_only`
+- An invalid value returns 422. Test: `test_bad_filter`
+
+## Security
+
+- The code contains no secrets. Judge only
+
+## Out of scope
+
+- Search, sorting and paging.
+"""
+TESTS = """
+def helper():
+    pass
+
+def test_open_only():
+    pass
+
+def test_bad_filter():
+    pass
+"""
+
+
+def test_an_intent_lists_its_criteria_and_their_proof():
+    intent = mandate.load_intent(INTENT, TESTS)
+    assert intent.title == "Filter tasks by done state"
+    assert intent.issue == 2
+    assert intent.criteria == (
+        mandate.Criterion("Feature", "`done=false` returns only open tasks.", "test_open_only"),
+        mandate.Criterion("Feature", "An invalid value returns 422.", "test_bad_filter"),
+        mandate.Criterion("Security", "The code contains no secrets.", None),
+    )
+
+
+def test_the_first_heading_is_the_title():
+    assert mandate.load_intent(INTENT + "\n# Another heading\n", TESTS).title == "Filter tasks by done state"
+
+
+def test_any_section_name_works():
+    text = INTENT.replace("## Security", "## Performance")
+    assert mandate.load_intent(text, TESTS).criteria[2].section == "Performance"
+
+
+@pytest.mark.parametrize(
+    "text, tests, message",
+    [
+        (INTENT.replace("# Filter tasks by done state\n", ""), TESTS, "needs a title"),
+        (INTENT.replace("Issue: #2\n", ""), TESTS, "needs exactly one Issue line"),
+        (INTENT.replace("Issue: #2", "Issue: #2\nIssue: #3"), TESTS, "needs exactly one Issue line"),
+        (INTENT.replace("Issue: #2", "Issue: 2"), TESTS, "needs exactly one Issue line"),
+        (INTENT.replace("Issue: #2", "Issue: #0"), TESTS, "needs exactly one Issue line"),
+        (INTENT.replace("Issue: #2", "Issue: #2\nIssue: #0"), TESTS, "needs exactly one Issue line"),
+        (INTENT.replace("Issue: #2", "Issue: #2\nissue: #3"), TESTS, "needs exactly one Issue line"),
+        (INTENT.replace("## Security\n", "## Security\n\n- \n"), TESTS, "needs a test or Judge only: -"),
+        (
+            INTENT.replace("## Security\n", "## Security\n\n```\n## Out of scope\n```\n\n- Hidden by the example.\n"),
+            TESTS,
+            "needs a test or Judge only: - Hidden by the example.",
+        ),
+        (INTENT.replace("## Security\n", "## Security\n\n```\n"), TESTS, "has a code block that never closes"),
+        (INTENT.replace(" Judge only", ""), TESTS, "needs a test or Judge only: - The code contains no secrets."),
+        (INTENT.replace("- The code", "* The code").replace(" Judge only", ""), TESTS, "needs a test or Judge only"),
+        (INTENT.replace("- The code", "1. The code").replace(" Judge only", ""), TESTS, "needs a test or Judge only"),
+        (INTENT.replace("Test: `test_open_only`", "Test: test_open_only"), TESTS, "needs a test or Judge only"),
+        (INTENT.replace("Test: `test_open_only`", "Test: `open_only`"), TESTS, "needs a test or Judge only"),
+        (INTENT.replace("test_open_only", "test_missing"), TESTS, "names tests that don't exist: test_missing"),
+        (INTENT, "def test_bad_filter():\n    pass\n", "names tests that don't exist: test_open_only"),
+        (INTENT, "class Holder:\n    def test_open_only(self):\n        pass\ndef test_bad_filter():\n    pass\n", "names tests that don't exist: test_open_only"),
+        (INTENT, "def test_open_only(:", "its tests can't be read"),
+        ("# Title\n\nIssue: #2\n\n## Security\n\n- No secrets. Judge only\n", TESTS, "needs at least one named test"),
+        ("# Title\n\nIssue: #2\n", TESTS, "needs at least one named test"),
+    ],
+)
+def test_a_bad_intent_is_refused(text, tests, message):
+    with pytest.raises(mandate.IntentError, match=message.replace("*", r"\*")):
+        mandate.load_intent(text, tests)
+
+
+@pytest.mark.parametrize("fence", ["```", "~~~", "  ```python"])
+def test_a_code_block_is_free_text(fence):
+    closing = fence.strip()[:3]
+    text = INTENT.replace("## Security\n", f"## Security\n\n{fence}\n- An example, not a criterion.\nIssue: #9\n{closing}\n")
+    intent = mandate.load_intent(text, TESTS)
+    assert intent.issue == 2
+    assert len(intent.criteria) == 3
+
+
+def test_out_of_scope_needs_no_proof_in_any_case():
+    text = INTENT.replace("## Out of scope", "## OUT OF SCOPE")
+    assert len(mandate.load_intent(text, TESTS).criteria) == 3
+
+
+def test_a_criterion_after_out_of_scope_still_needs_proof():
+    text = INTENT + "\n## Reliability\n\n- It never crashes.\n"
+    with pytest.raises(mandate.IntentError, match="needs a test or Judge only: - It never crashes."):
+        mandate.load_intent(text, TESTS)
