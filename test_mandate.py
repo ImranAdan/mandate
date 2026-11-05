@@ -119,6 +119,7 @@ def test_optional_settings_have_safe_defaults():
         (CONFIG.replace('intent_repo = "ImranAdan/mandate-intent"\n', ""), "intent_repo must be owner/name"),
         (CONFIG.replace("ImranAdan/mandate-intent", "mandate-intent"), "intent_repo must be owner/name"),
         (CONFIG.split("[proofs.tests]")[0], "at least one proof is required"),
+        (CONFIG.split("[proofs.tests]")[0] + "[proofs]\n", "at least one proof is required"),
         (CONFIG.replace('check = "test"\n', ""), "proof tests needs check and workflow"),
         (CONFIG.replace('workflow = ".github/workflows/ci.yml"', 'workflow = "ci.yml"'), "proof tests must name a workflow"),
         (CONFIG + 'extra = "x"\n', "proof tests has unknown settings: extra"),
@@ -246,6 +247,7 @@ def test_a_reserved_path_comes_to_the_owner_whatever_the_score(path, code):
         "not.github/x.yml",
         "not_schema.sql",
         "migration_notes.md",
+        "NOT_AGENTS.md",
         "pyproject.toml",
     ],
 )
@@ -268,6 +270,12 @@ def test_a_failed_proof_outranks_a_reserved_path():
     decision = decide(paths=("schema.sql",), checks=(check(conclusion="failure"),))
     assert decision.outcome == "BLOCK"
     assert codes(decision) == ["PROOF_FAILED", "RESERVED:migration"]
+
+
+def test_a_reserved_path_outranks_a_missing_proof():
+    decision = decide(paths=("schema.sql",), checks=())
+    assert decision.outcome == "ESCALATE"
+    assert codes(decision) == ["RESERVED:migration", "PROOF_MISSING"]
 
 
 def test_a_pr_with_no_changes_comes_to_the_owner():
