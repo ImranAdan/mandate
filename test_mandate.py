@@ -429,6 +429,15 @@ def test_any_section_name_works():
         (INTENT.replace("Issue: #2", "Issue: #2\nIssue: #3"), TESTS, "needs exactly one Issue line"),
         (INTENT.replace("Issue: #2", "Issue: 2"), TESTS, "needs exactly one Issue line"),
         (INTENT.replace("Issue: #2", "Issue: #0"), TESTS, "needs exactly one Issue line"),
+        (INTENT.replace("Issue: #2", "Issue: #2\nIssue: #0"), TESTS, "needs exactly one Issue line"),
+        (INTENT.replace("Issue: #2", "Issue: #2\nissue: #3"), TESTS, "needs exactly one Issue line"),
+        (INTENT.replace("## Security\n", "## Security\n\n- \n"), TESTS, "needs a test or Judge only: -"),
+        (
+            INTENT.replace("## Security\n", "## Security\n\n```\n## Out of scope\n```\n\n- Hidden by the example.\n"),
+            TESTS,
+            "needs a test or Judge only: - Hidden by the example.",
+        ),
+        (INTENT.replace("## Security\n", "## Security\n\n```\n"), TESTS, "has a code block that never closes"),
         (INTENT.replace(" Judge only", ""), TESTS, "needs a test or Judge only: - The code contains no secrets."),
         (INTENT.replace("- The code", "* The code").replace(" Judge only", ""), TESTS, "needs a test or Judge only"),
         (INTENT.replace("- The code", "1. The code").replace(" Judge only", ""), TESTS, "needs a test or Judge only"),
@@ -445,6 +454,15 @@ def test_any_section_name_works():
 def test_a_bad_intent_is_refused(text, tests, message):
     with pytest.raises(mandate.IntentError, match=message.replace("*", r"\*")):
         mandate.load_intent(text, tests)
+
+
+@pytest.mark.parametrize("fence", ["```", "~~~", "  ```python"])
+def test_a_code_block_is_free_text(fence):
+    closing = fence.strip()[:3]
+    text = INTENT.replace("## Security\n", f"## Security\n\n{fence}\n- An example, not a criterion.\nIssue: #9\n{closing}\n")
+    intent = mandate.load_intent(text, TESTS)
+    assert intent.issue == 2
+    assert len(intent.criteria) == 3
 
 
 def test_out_of_scope_needs_no_proof_in_any_case():
