@@ -19,6 +19,7 @@ import mandate
 
 DELEGATION_REPO = "ImranAdan/mandate-delegation"
 CHECK_NAME = "mandate/decision"
+CHECK_PARAMETER = "mandate%2Fdecision"
 JUDGE_URL = "http://127.0.0.1:11434/v1/chat/completions"
 JUDGE_REPLY_FORMAT = {
     "type": "json_schema",
@@ -153,13 +154,62 @@ def evaluate(
     paths = changed_paths(get, repo, number)
     checks = check_results(get, repo, sha)
 
-    def decide(score: object = None, response: str | None = None) -> mandate.Decision:
-        return mandate.decide(delegation, number, sha, paths, checks, intent, acceptance, score, response)
+    def decide(score: object = None, response: str | None = None, refusals: int = 0) -> mandate.Decision:
+        return mandate.decide(delegation, number, sha, paths, checks, intent, acceptance, score, response, refusals)
 
     decision = decide()
     if [reason.code for reason in decision.reasons] != ["JUDGE_SCORE_MISSING"] or delegation.judge_model == mandate.NO_JUDGE:
         return decision
-    return decide(*_judged(delegation, intent, number, read_diff, ask_judge))
+    records = decision_history(get, repo, number)
+    refusals = prior_refusals(records, sha)
+    if refusals >= mandate.REFUSAL_LIMIT:
+        return decide(refusals=refusals)
+    earlier = earlier_score(records, sha, delegation.judge_model, intent.commit)
+    if earlier:
+        return decide(earlier["judge_score"], earlier.get("judge_response"), refusals)
+    return decide(*_judged(delegation, intent, number, read_diff, ask_judge), refusals)
+
+
+def decision_history(get: Callable, repo: str, number: int) -> list[dict]:
+    """Earlier receipts for this pull request, newest first within each commit.
+
+    ponytail: any workflow on a branch can post a check under this name and app, so
+    this history can be forged until the check moves to Mandate's own App. It only
+    decides a dry run for now, and stage 3 must filter on that App instead.
+    """
+    records = []
+    for commit in get(f"repos/{repo}/pulls/{number}/commits?per_page={PER_PAGE}"):
+        path = f"repos/{repo}/commits/{commit['sha']}/check-runs?check_name={CHECK_PARAMETER}&filter=all&per_page={PER_PAGE}"
+        for run in get(path)["check_runs"]:
+            record = mandate.read_receipt(run["output"].get("text")) if run["app"]["slug"] == mandate.GITHUB_ACTIONS else None
+            if record and record.get("pr") == number:
+                records.append(record)
+    return records
+
+
+def prior_refusals(records: list[dict], sha: str) -> int:
+    """How many other commits of this pull request the Judge refused."""
+    return len(
+        {
+            record.get("commit")
+            for record in records
+            if record.get("commit") != sha
+            and any(reason.get("code") in mandate.REFUSAL_CODES for reason in record.get("reasons", []))
+        }
+    )
+
+
+def earlier_score(records: list[dict], sha: str, model: str, intent_commit: str) -> dict | None:
+    """The newest score for this commit from this model and intent, so a rerun can't re-roll it."""
+    for record in records:
+        if (
+            record.get("commit") == sha
+            and record.get("judge_model") == model
+            and record.get("intent_commit") == intent_commit
+            and record.get("judge_score") is not None
+        ):
+            return record
+    return None
 
 
 def _judged(
