@@ -77,6 +77,10 @@ A failed read never counts as having no intents. The token for that repo is shor
 
 Only the receipt is ever printed or posted. An Actions log on a public repo is public, so the acceptance tests' output is dropped, and if a run fails, only the error's type is shown. Those tests get no token. Anything that can't be read in full, such as a short list of changed files, stops the decision rather than being guessed at.
 
+## The Judge
+
+When everything else has passed and `judge_model` isn't `none`, `run.py` asks a local model through Ollama's OpenAI-compatible API. It sends the intent, with test names removed, and the PR's diff. The model's reply shows on the check for debugging, and only its score counts. A failed call, an unusable reply, or a diff over `MAX_DIFF_CHARS` gives no score, so nothing can pass by it. Only this one kind of model is supported so far.
+
 ## Known limits
 
 - **Reserved paths:** these are found by path alone, so any `.github/` change comes to the owner, and SQL inside application code isn't seen.

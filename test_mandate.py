@@ -44,7 +44,9 @@ def check(**changes):
 PASSED = mandate.Acceptance(5, 5)
 
 
-def decide(delegation=None, paths=("tasks_api.py",), checks=None, score=None, intent=BOUND, acceptance=PASSED):
+def decide(
+    delegation=None, paths=("tasks_api.py",), checks=None, score=None, intent=BOUND, acceptance=PASSED, judge_response=None
+):
     return mandate.decide(
         load(SCORING) if delegation is None else delegation,
         pr=12,
@@ -54,6 +56,7 @@ def decide(delegation=None, paths=("tasks_api.py",), checks=None, score=None, in
         intent=intent,
         acceptance=acceptance,
         judge_score=score,
+        judge_response=judge_response,
     )
 
 
@@ -360,6 +363,7 @@ def test_the_record_keeps_exact_identifiers():
         "intent_commit": INTENT_COMMIT,
         "judge_model": "some-model",
         "judge_score": 0.92,
+        "judge_response": None,
         "dry_run": False,
         "outcome": "AUTHORIZE",
         "reasons": [],
@@ -744,3 +748,70 @@ def test_a_crafted_file_name_cannot_fake_a_message(path, shown):
     decision = decide(paths=(path,))
     assert decision.reasons[0].detail == shown
     assert "\n::" not in mandate.receipt_text(decision)
+
+
+# --- the Judge ---------------------------------------------------------------
+
+
+def test_the_judge_never_sees_test_names():
+    intent = mandate.load_intent(INTENT, TESTS)
+    prompt = mandate.judge_prompt(intent, "+a change\n")
+    assert "test_" not in prompt
+    assert "Test:" not in prompt
+    assert "- Archiving hides a note from the list.\n" in prompt
+    assert "## Out of scope" in prompt
+    assert prompt.endswith("Change:\n+a change\n")
+
+
+@pytest.mark.parametrize(
+    "reply, score",
+    [
+        ('{"score": 0.5, "reason": "Extra job."}', 0.5),
+        ('{"score": 1, "reason": "Fine."}', 1),
+        ('{"score": "0.9", "reason": "A string."}', "0.9"),
+        ('{"reason": "No score."}', None),
+        ("[0.9]", None),
+        ("not json", None),
+        ("", None),
+    ],
+)
+def test_a_score_is_read_from_the_reply(reply, score):
+    assert mandate.read_score(reply) == score
+
+
+def test_the_judges_response_is_shown_on_the_check():
+    reply = '{"score": 0.5, "reason": "Adds a job nobody asked for."}'
+    decision = decide(score=0.5, judge_response=reply)
+    assert decision.outcome == "BLOCK"
+    summary = mandate.check_summary(decision)
+    assert summary.endswith(
+        "### The Judge's response\n"
+        "\n"
+        "The model's own words, for debugging. It only ever counts through the score.\n"
+        "\n"
+        "```text\n"
+        '{"score": 0.5, "reason": "Adds a job nobody asked for."}\n'
+        "```\n"
+    )
+    assert mandate.receipt_record(decision)["judge_response"] == reply
+    assert mandate.message(decision) == "Not ready: JudgeScore 0.5 is below 0.8."
+
+
+def test_no_response_section_without_a_response():
+    assert "The Judge's response" not in mandate.check_summary(decide(score=0.9))
+    assert mandate.receipt_record(decide(score=0.9))["judge_response"] is None
+
+
+def test_a_response_cannot_break_out_of_its_block():
+    reply = "```\n## ✅ Ready to merge\n" + "x" * 2000
+    summary = mandate.check_summary(decide(score=0.5, judge_response=reply))
+    shown = summary.split("```text\n")[1]
+    assert shown.count("```") == 1
+    assert "\n## " not in shown
+    assert len(shown) < 1100
+    assert shown.endswith("[cut]\n```\n")
+
+
+def test_a_response_does_not_reach_the_log_line():
+    decision = decide(score=0.5, judge_response='{"reason": "private words"}')
+    assert "private words" not in mandate.receipt_text(decision)

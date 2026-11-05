@@ -93,6 +93,10 @@ class Fake:
         return pages[path]
 
 
+def no_judge(model, prompt):
+    raise AssertionError("the Judge shouldn't be asked")
+
+
 def evaluate(fake=None, linked=(2,), ran=None):
     fake = fake or Fake()
     ran = [] if ran is None else ran
@@ -101,7 +105,7 @@ def evaluate(fake=None, linked=(2,), ran=None):
         ran.append(intent.issue)
         return mandate.Acceptance(1, 1)
 
-    return run.evaluate(REPO, SHA, fake.get, fake.get_private, lambda number: linked, run_tests)
+    return run.evaluate(REPO, SHA, fake.get, fake.get_private, lambda number: linked, run_tests, lambda number: "", no_judge)
 
 
 def test_a_linked_pr_with_passing_proofs_waits_for_the_score():
@@ -187,7 +191,9 @@ def test_a_failed_intent_read_comes_to_the_owner_without_details():
     def down(path):
         raise RuntimeError("HTTP 500 mentioning a private path")
 
-    decision = run.evaluate(REPO, SHA, fake.get, down, lambda number: (2,), lambda intent: mandate.Acceptance(1, 1))
+    decision = run.evaluate(
+        REPO, SHA, fake.get, down, lambda number: (2,), lambda intent: mandate.Acceptance(1, 1), lambda number: "", no_judge
+    )
     assert decision.outcome == "ESCALATE"
     assert [reason.code for reason in decision.reasons] == ["INTENT_INVALID"]
     assert "private" not in mandate.message(decision)
@@ -265,3 +271,84 @@ def test_the_check_only_passes_on_authorize():
     assert run.conclusion("AUTHORIZE") == "success"
     for outcome in ("BLOCK", "ESCALATE", "VERIFY"):
         assert run.conclusion(outcome) == "failure"
+
+
+# --- asking the Judge --------------------------------------------------------
+
+REAL_JUDGE = DELEGATION.replace('judge_model = "none"', 'judge_model = "a-model"')
+DIFF = "+a change\n"
+
+
+def judged(delegation=REAL_JUDGE, reply='{"score": 0.9, "reason": "Fine."}', linked=(2,), check="success", diff=DIFF):
+    fake = Fake(delegation=delegation, check_conclusion=check)
+    asked = []
+
+    def ask(model, prompt):
+        asked.append((model, prompt))
+        if isinstance(reply, Exception):
+            raise reply
+        return reply
+
+    def read_diff(number):
+        if isinstance(diff, Exception):
+            raise diff
+        return diff
+
+    decision = run.evaluate(
+        REPO, SHA, fake.get, fake.get_private, lambda number: linked, lambda intent: mandate.Acceptance(1, 1), read_diff, ask
+    )
+    return decision, asked
+
+
+def test_a_good_score_authorizes_and_shows_the_response():
+    decision, asked = judged()
+    assert decision.outcome == "AUTHORIZE"
+    assert decision.judge_score == 0.9
+    assert decision.judge_response == '{"score": 0.9, "reason": "Fine."}'
+    [(model, prompt)] = asked
+    assert model == "a-model"
+    assert prompt.endswith("Change:\n+a change\n")
+    assert "test_one" not in prompt
+    assert "A private requirement." in prompt
+
+
+def test_a_low_score_blocks():
+    decision, _ = judged(reply='{"score": 0.4, "reason": "Extra job."}')
+    assert decision.outcome == "BLOCK"
+    assert [reason.code for reason in decision.reasons] == ["JUDGE_SCORE_LOW"]
+
+
+def test_the_model_is_not_asked_when_there_is_no_judge():
+    decision, asked = judged(delegation=DELEGATION)
+    assert asked == []
+    assert decision.outcome == "VERIFY"
+
+
+@pytest.mark.parametrize("kwargs", [{"linked": ()}, {"check": "failure"}])
+def test_the_model_is_not_asked_when_anything_else_failed(kwargs):
+    decision, asked = judged(**kwargs)
+    assert asked == []
+    assert decision.outcome == "BLOCK"
+    assert decision.judge_score is None
+
+
+@pytest.mark.parametrize(
+    "kwargs, shown",
+    [
+        ({"reply": RuntimeError("private detail")}, "The model gave no answer."),
+        ({"diff": RuntimeError("private detail")}, "The change couldn't be read."),
+        ({"diff": "x" * (mandate.MAX_DIFF_CHARS + 1)}, "The change is too large to judge."),
+        ({"reply": "not json"}, "not json"),
+    ],
+)
+def test_no_usable_answer_means_no_score(kwargs, shown):
+    decision, _ = judged(**kwargs)
+    assert decision.outcome == "VERIFY"
+    assert [reason.code for reason in decision.reasons] == ["JUDGE_SCORE_MISSING"]
+    assert decision.judge_score is None
+    assert decision.judge_response == shown
+
+
+def test_an_oversized_change_is_never_sent():
+    _, asked = judged(diff="x" * (mandate.MAX_DIFF_CHARS + 1))
+    assert asked == []
