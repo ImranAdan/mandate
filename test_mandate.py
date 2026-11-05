@@ -382,16 +382,16 @@ def test_the_record_of_an_invalid_delegation_has_no_settings_to_name():
 
 # --- the intent --------------------------------------------------------------
 
-INTENT = """# Filter tasks by done state
+INTENT = """# Archive old notes
 
 Issue: #2
 
 ## Feature
 
-`GET /tasks` accepts an optional `done` filter.
+Old notes can be archived.
 
-- `done=false` returns only open tasks. Test: `test_open_only`
-- An invalid value returns 422. Test: `test_bad_filter`
+- Archiving hides a note from the list. Test: `test_archive_hides_a_note`
+- Archiving an unknown note returns 404. Test: `test_unknown_note`
 
 ## Security
 
@@ -399,27 +399,27 @@ Issue: #2
 
 ## Out of scope
 
-- Search, sorting and paging.
+- Search and tags.
 """
 TESTS = """
 def helper():
     pass
 
-def test_open_only():
+def test_archive_hides_a_note():
     pass
 
-def test_bad_filter():
+def test_unknown_note():
     pass
 """
 
 
 def test_an_intent_lists_its_criteria_and_their_proof():
     intent = mandate.load_intent(INTENT, TESTS)
-    assert intent.title == "Filter tasks by done state"
+    assert intent.title == "Archive old notes"
     assert intent.issue == 2
     assert intent.criteria == (
-        mandate.Criterion("Feature", "`done=false` returns only open tasks.", "test_open_only"),
-        mandate.Criterion("Feature", "An invalid value returns 422.", "test_bad_filter"),
+        mandate.Criterion("Feature", "Archiving hides a note from the list.", "test_archive_hides_a_note"),
+        mandate.Criterion("Feature", "Archiving an unknown note returns 404.", "test_unknown_note"),
         mandate.Criterion("Security", "The code contains no secrets.", None),
     )
     assert intent.commit == ""
@@ -429,7 +429,7 @@ def test_an_intent_lists_its_criteria_and_their_proof():
 
 
 def test_the_first_heading_is_the_title():
-    assert mandate.load_intent(INTENT + "\n# Another heading\n", TESTS).title == "Filter tasks by done state"
+    assert mandate.load_intent(INTENT + "\n# Another heading\n", TESTS).title == "Archive old notes"
 
 
 def test_any_section_name_works():
@@ -440,7 +440,7 @@ def test_any_section_name_works():
 @pytest.mark.parametrize(
     "text, tests, message",
     [
-        (INTENT.replace("# Filter tasks by done state\n", ""), TESTS, "needs a title"),
+        (INTENT.replace("# Archive old notes\n", ""), TESTS, "needs a title"),
         (INTENT.replace("Issue: #2\n", ""), TESTS, "needs exactly one Issue line"),
         (INTENT.replace("Issue: #2", "Issue: #2\nIssue: #3"), TESTS, "needs exactly one Issue line"),
         (INTENT.replace("Issue: #2", "Issue: 2"), TESTS, "needs exactly one Issue line"),
@@ -457,12 +457,12 @@ def test_any_section_name_works():
         (INTENT.replace(" Judge only", ""), TESTS, "needs a test or Judge only: - The code contains no secrets."),
         (INTENT.replace("- The code", "* The code").replace(" Judge only", ""), TESTS, "needs a test or Judge only"),
         (INTENT.replace("- The code", "1. The code").replace(" Judge only", ""), TESTS, "needs a test or Judge only"),
-        (INTENT.replace("Test: `test_open_only`", "Test: test_open_only"), TESTS, "needs a test or Judge only"),
-        (INTENT.replace("Test: `test_open_only`", "Test: `open_only`"), TESTS, "needs a test or Judge only"),
-        (INTENT.replace("test_open_only", "test_missing"), TESTS, "names tests that don't exist: test_missing"),
-        (INTENT, "def test_bad_filter():\n    pass\n", "names tests that don't exist: test_open_only"),
-        (INTENT, "class Holder:\n    def test_open_only(self):\n        pass\ndef test_bad_filter():\n    pass\n", "names tests that don't exist: test_open_only"),
-        (INTENT, "def test_open_only(:", "its tests can't be read"),
+        (INTENT.replace("Test: `test_archive_hides_a_note`", "Test: test_archive_hides_a_note"), TESTS, "needs a test or Judge only"),
+        (INTENT.replace("Test: `test_archive_hides_a_note`", "Test: `open_only`"), TESTS, "needs a test or Judge only"),
+        (INTENT.replace("test_archive_hides_a_note", "test_missing"), TESTS, "names tests that don't exist: test_missing"),
+        (INTENT, "def test_unknown_note():\n    pass\n", "names tests that don't exist: test_archive_hides_a_note"),
+        (INTENT, "class Holder:\n    def test_archive_hides_a_note(self):\n        pass\ndef test_unknown_note():\n    pass\n", "names tests that don't exist: test_archive_hides_a_note"),
+        (INTENT, "def test_archive_hides_a_note(:", "its tests can't be read"),
         ("# Title\n\nIssue: #2\n\n## Security\n\n- No secrets. Judge only\n", TESTS, "needs at least one named test"),
         ("# Title\n\nIssue: #2\n", TESTS, "needs at least one named test"),
     ],
@@ -566,7 +566,7 @@ def github(files):
 def test_intents_are_all_read_at_one_commit():
     get = github({"filter-by-done.md": INTENT, "test_filter_by_done.py": TESTS})
     intents = mandate.read_intents(get, "o/intents", "tasks-api")
-    assert [(i.title, i.issue, i.commit) for i in intents] == [("Filter tasks by done state", 2, INTENT_COMMIT)]
+    assert [(i.title, i.issue, i.commit) for i in intents] == [("Archive old notes", 2, INTENT_COMMIT)]
     assert get.calls[0] == "repos/o/intents/commits/main"
     assert all(f"ref={INTENT_COMMIT}" in call for call in get.calls[1:])
 

@@ -2,6 +2,8 @@
 
 A small merge authority: it decides whether an agent's pull request may merge.
 
+See the [design](docs/design.md) for how the whole flow fits together, with diagrams.
+
 `mandate.py` holds the logic only. The settings it reads live in the owner's `mandate-delegation` repo, at `repositories/<repo>.toml`, so a change of rules never touches this repo.
 
 ## How a decision works
@@ -36,15 +38,15 @@ Any other setting makes the whole file invalid, and then every pull request come
 An intent has a title, one `Issue:` line, and any sections. Everything is free text except the bullets: each one names a test or says `Judge only`, apart from those under `Out of scope`.
 
 ```markdown
-# Filter tasks by done state
+# Archive old notes
 
 Issue: #2
 
 ## Feature
 
-`GET /tasks` accepts an optional `done` filter.
+Old notes can be archived.
 
-- `done=false` returns only open tasks. Test: `test_open_only`
+- Archiving hides a note from the list. Test: `test_archive_hides_a_note`
 
 ## Security
 
@@ -52,7 +54,7 @@ Issue: #2
 
 ## Out of scope
 
-Search, sorting and paging.
+Search and tags.
 ```
 
 Code blocks are free text too. `load_intent` refuses an intent that breaks this, including one naming a test that doesn't exist, naming no tests at all, or with a code block that never closes.
