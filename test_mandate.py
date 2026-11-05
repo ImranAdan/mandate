@@ -424,7 +424,7 @@ def test_an_intent_lists_its_criteria_and_their_proof():
     )
     assert intent.commit == ""
     assert intent.tests == TESTS
-    assert TESTS not in repr(intent)
+    assert "def helper" not in repr(intent)
     assert mandate.load_intent(INTENT, TESTS, INTENT_COMMIT).commit == INTENT_COMMIT
 
 
@@ -628,6 +628,7 @@ def case(name, child=""):
         (junit(case("test_one"), case("test_two"), case("test_extra", "<failure/>")), 2, 3),
         (junit(case("test_one"), case("test_two[a]"), case("test_two[b]", "<failure/>")), 1, 2),
         (junit(case("test_one"), case("test_two[a]"), case("test_two[b]")), 2, 2),
+        (junit(case("test_one"), case("test_two[a]", "<failure/>"), case("test_two[b]")), 1, 2),
     ],
 )
 def test_acceptance_results_count_only_what_really_passed(report, passed, total):

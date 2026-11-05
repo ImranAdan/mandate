@@ -10,8 +10,9 @@ import ast
 import base64
 import re
 import tomllib
+import xml.etree.ElementTree as ElementTree
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 GITHUB_ACTIONS = "github-actions"
 PULL_REQUEST = "pull_request"
@@ -63,6 +64,13 @@ class Intent:
     issue: int
     criteria: tuple[Criterion, ...]
     commit: str = ""
+    tests: str = field(default="", repr=False)
+
+
+@dataclass(frozen=True)
+class Acceptance:
+    passed: int
+    total: int
 
 
 @dataclass(frozen=True)
@@ -228,7 +236,7 @@ def load_intent(text: str, tests_source: str, commit: str = "") -> Intent:
     missing = sorted(named - _test_functions(tests_source))
     if missing:
         raise IntentError(f"names tests that don't exist: {', '.join(missing)}")
-    return Intent(title, int(issues[0][1]), tuple(criteria), commit)
+    return Intent(title, int(issues[0][1]), tuple(criteria), commit, tests_source)
 
 
 def _test_functions(source: str) -> set[str]:
@@ -237,6 +245,22 @@ def _test_functions(source: str) -> set[str]:
     except SyntaxError as error:
         raise IntentError(f"its tests can't be read: {error}") from error
     return {node.name for node in tree.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))}
+
+
+def read_acceptance(report: str, intent: Intent) -> Acceptance:
+    """Results from pytest's JUnit report. A named test that didn't run counts as failed."""
+    results = {criterion.test: False for criterion in intent.criteria if criterion.test}
+    try:
+        root = ElementTree.fromstring(report)
+    except ElementTree.ParseError:
+        return Acceptance(0, len(results))
+    ran: dict[str, bool] = {}
+    for case in root.iter("testcase"):
+        name = case.get("name", "").split("[", 1)[0]
+        passed = not any(child.tag in ("failure", "error", "skipped") for child in case)
+        ran[name] = ran.get(name, True) and passed
+    results |= ran
+    return Acceptance(sum(results.values()), len(results))
 
 
 def read_intents(get: Callable[[str], object], repo: str, app: str) -> tuple[Intent, ...]:
@@ -285,6 +309,7 @@ def decide(
     changed_paths: tuple[str, ...],
     checks: tuple[CheckResult, ...],
     intent: Intent | IntentUnbound | IntentError,
+    acceptance: Acceptance | None,
     judge_score: object = None,
 ) -> Decision:
     """One outcome and every reason for one exact commit of a pull request.
@@ -298,7 +323,7 @@ def decide(
 
     proofs = _proof_reasons(delegation, head_sha, checks)
     reserved = _reserved_reasons(changed_paths)
-    reasons = [*proofs, *reserved, *_intent_reasons(intent)]
+    reasons = [*proofs, *reserved, *_intent_reasons(intent), *_acceptance_reasons(intent, acceptance)]
     score = None
     if not reasons:
         score, judged = _judged(delegation, judge_score)
@@ -314,6 +339,17 @@ def _intent_reasons(intent: Intent | IntentUnbound | IntentError) -> list[Reason
         return [Reason("INTENT_UNBOUND", "BLOCK", str(intent))]
     if isinstance(intent, IntentError):  # its text can quote the private intent, and this message is public
         return [Reason("INTENT_INVALID", "ESCALATE", "the intent can't be used")]
+    return []
+
+
+def _acceptance_reasons(intent: object, acceptance: Acceptance | None) -> list[Reason]:
+    if not isinstance(intent, Intent):
+        return []
+    if acceptance is None:
+        return [Reason("ACCEPTANCE_MISSING", "VERIFY", "the acceptance tests haven't run")]
+    if not acceptance.total or acceptance.passed != acceptance.total:
+        failed = acceptance.total - acceptance.passed
+        return [Reason("ACCEPTANCE_FAILED", "BLOCK", f"{failed} of {acceptance.total} acceptance tests failed")]
     return []
 
 

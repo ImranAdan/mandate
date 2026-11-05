@@ -172,6 +172,27 @@ def test_an_unreadable_delegation_comes_to_the_owner():
     assert decision.reasons[0].code == "DELEGATION_INVALID"
 
 
+def test_a_failed_delegation_read_comes_to_the_owner():
+    def down(path):
+        raise RuntimeError("HTTP 500")
+
+    delegation = run.read_delegation(down, REPO)
+    assert isinstance(delegation, mandate.DelegationError)
+    assert str(delegation) == "the settings can't be read"
+
+
+def test_a_failed_intent_read_comes_to_the_owner_without_details():
+    fake = Fake()
+
+    def down(path):
+        raise RuntimeError("HTTP 500 mentioning a private path")
+
+    decision = run.evaluate(REPO, SHA, fake.get, down, lambda number: (2,), lambda intent: mandate.Acceptance(1, 1))
+    assert decision.outcome == "ESCALATE"
+    assert [reason.code for reason in decision.reasons] == ["INTENT_INVALID"]
+    assert "private" not in mandate.message(decision)
+
+
 def test_a_check_with_no_known_run_has_no_source():
     fake = Fake()
     real_get = fake.get
@@ -183,6 +204,25 @@ def test_a_check_with_no_known_run_has_no_source():
 
     [result, _] = run.check_results(get, REPO, SHA)
     assert (result.name, result.workflow, result.event) == ("test", "", "")
+
+
+def test_a_check_is_traced_to_its_own_run():
+    fake = Fake()
+    real_get = fake.get
+
+    def get(path):
+        if "actions/runs?" in path:
+            return {
+                "total_count": 2,
+                "workflow_runs": [
+                    {"id": 10, "path": ".github/workflows/other.yml", "event": "push"},
+                    {"id": 11, "path": ".github/workflows/ci.yml", "event": "pull_request"},
+                ],
+            }
+        return real_get(path)
+
+    [result, _] = run.check_results(get, REPO, SHA)
+    assert (result.workflow, result.event) == (".github/workflows/ci.yml", "pull_request")
 
 
 def test_too_many_checks_are_refused_rather_than_truncated():
