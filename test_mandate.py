@@ -654,3 +654,93 @@ def test_a_high_score_cannot_rescue_the_acceptance_tests(acceptance, outcome, ex
 def test_acceptance_results_do_not_matter_without_an_intent():
     decision = decide(intent=mandate.IntentUnbound("link exactly one issue"), acceptance=None)
     assert codes(decision) == ["INTENT_UNBOUND"]
+
+
+# --- how the receipt looks on the pull request -------------------------------
+
+
+def test_a_refusal_reads_as_a_summary():
+    decision = decide(paths=("schema.sql",), acceptance=mandate.Acceptance(2, 5))
+    assert mandate.message(decision) == "Not ready: 3 of 5 acceptance tests failed."
+    assert mandate.check_summary(decision) == (
+        "## ❌ Not ready\n"
+        "\n"
+        "3 of 5 acceptance tests failed.\n"
+        "\n"
+        "| | |\n"
+        "|---|---|\n"
+        "| **Pull request** | #12 |\n"
+        "| **Commit** | `aaaaaaa` |\n"
+        "| **JudgeScore** | Missing |\n"
+        "| **Mode** | Dry run: nothing merges |\n"
+        "| **Intent** | Issue #2 |\n"
+        "\n"
+        "### What was found\n"
+        "\n"
+        "- ❌ 3 of 5 acceptance tests failed\n"
+        "- 👤 Needs the owner: `schema.sql`\n"
+    )
+
+
+def test_a_pass_reads_as_a_summary():
+    decision = decide(load(LIVE), score=0.92)
+    assert mandate.message(decision) == "Ready to merge."
+    assert mandate.check_summary(decision) == (
+        "## ✅ Ready to merge\n"
+        "\n"
+        "Every proof passed, and the score cleared the threshold.\n"
+        "\n"
+        "| | |\n"
+        "|---|---|\n"
+        "| **Pull request** | #12 |\n"
+        "| **Commit** | `aaaaaaa` |\n"
+        "| **JudgeScore** | 0.92 |\n"
+        "| **Mode** | Live: merges when ready |\n"
+        "| **Intent** | Issue #2 |\n"
+    )
+
+
+def test_a_dry_run_pass_says_it_did_not_merge():
+    summary = mandate.check_summary(decide(score=0.92))
+    assert summary.startswith("## ✅ Ready to merge\n\nThis is a dry run, so it wasn't merged.\n")
+    assert "| **Mode** | Dry run: nothing merges |" in summary
+
+
+def test_waiting_and_warnings_read_plainly():
+    delegation = load(CONFIG.replace("dry_run = true", "dry_run = false"))
+    summary = mandate.check_summary(decide(delegation))
+    assert summary.startswith("## ⏳ Waiting for proof\n\nJudgeScore missing.\n")
+    assert "- ⏳ JudgeScore missing\n" in summary
+    assert '\n### Warnings\n\n- ⚠️ judge_model is "none"; forcing dry_run to true\n' in summary
+
+
+def test_an_invalid_delegation_reads_plainly():
+    summary = mandate.check_summary(decide(mandate.DelegationError("bad settings")))
+    assert summary.startswith("## 👤 Needs the owner\n\nbad settings.\n")
+    assert "| **Mode** | Dry run: nothing merges |" in summary
+    assert "| **Intent** | None |" in summary
+
+
+def test_the_full_receipt_is_folded_away():
+    decision = decide(load(LIVE), score=0.92)
+    details = mandate.check_details(decision)
+    assert details.startswith("<details>\n<summary>Full receipt</summary>\n\n```json\n")
+    assert details.endswith("\n```\n\n</details>\n")
+    assert json.loads(details.split("```json\n")[1].split("\n```")[0]) == mandate.receipt_record(decision)
+
+
+@pytest.mark.parametrize(
+    "path, shown",
+    [
+        ("migrations/a\n::error::fake.sql", "migrations/a???error??fake.sql"),
+        ("migrations/`](x).sql", "migrations/???x?.sql"),
+        ("migrations/## ✅ Ready.sql", "migrations/?? ? Ready.sql"),
+        ("migrations/a|b.sql", "migrations/a?b.sql"),
+        ("migrations/é.sql", "migrations/?.sql"),
+        ("migrations/good-file_1.sql", "migrations/good-file_1.sql"),
+    ],
+)
+def test_a_crafted_file_name_cannot_fake_a_message(path, shown):
+    decision = decide(paths=(path,))
+    assert decision.reasons[0].detail == shown
+    assert "\n::" not in mandate.receipt_text(decision)

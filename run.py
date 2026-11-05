@@ -163,12 +163,12 @@ def _gh(token: str, *arguments: str, stdin: str | None = None) -> object:
     return json.loads(done.stdout)
 
 
-def _post_check(token: str, repo: str, sha: str, title: str, summary: str, details: str) -> None:
+def _post_check(token: str, repo: str, sha: str, outcome: str, title: str, summary: str, details: str) -> None:
     body = {
         "name": CHECK_NAME,
         "head_sha": sha,
         "status": "completed",
-        "conclusion": conclusion(title),
+        "conclusion": conclusion(outcome),
         "output": {"title": title, "summary": summary, "text": details},
     }
     _gh(token, f"repos/{repo}/check-runs", "--method", "POST", "--input", "-", stdin=json.dumps(body))
@@ -206,20 +206,28 @@ def main() -> int:
             lambda intent: run_acceptance(intent, base_url),
         )
     except Refused as refused:
-        _post_check(token, repo, sha, "BLOCK", f"Not ready: {refused}.", "")
+        _post_check(token, repo, sha, "BLOCK", f"Not ready: {refused}.", f"## ❌ Not ready\n\n{refused}.\n", "")
         print(f"BLOCK: {refused}")
         return 0
     except Exception as error:  # its text could quote private content, so only its type is shown
         print(f"Mandate couldn't finish: {type(error).__name__}")
-        _post_check(token, repo, sha, "BLOCK", "Mandate couldn't finish, so nothing was decided.", "")
+        title = "Mandate couldn't finish, so nothing was decided."
+        _post_check(token, repo, sha, "BLOCK", title, f"## ❌ Not ready\n\n{title}\n", "")
         return 1
 
     if decision is None:
         print("No open pull request has this commit, so there is nothing to decide.")
         return 0
-    text = mandate.receipt_text(decision)
-    _post_check(token, repo, sha, decision.outcome, text, json.dumps(mandate.receipt_record(decision), indent=2))
-    print(text)
+    _post_check(
+        token,
+        repo,
+        sha,
+        decision.outcome,
+        mandate.message(decision),
+        mandate.check_summary(decision),
+        mandate.check_details(decision),
+    )
+    print(mandate.receipt_text(decision))
     return 0
 
 
