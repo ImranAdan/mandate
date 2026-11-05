@@ -40,7 +40,7 @@ flowchart LR
 |---|---|---|
 | `mandate-delegation` | Rules and settings, one file per app | Only the owner merges |
 | `mandate` | The decision logic | Agents, but it has no effect until an app moves its pin |
-| `mandate-intent` | Intents and acceptance tests, one folder per app | The product owner. Agents have no access by design |
+| `mandate-intent` | Intents and acceptance tests, one folder per app | The product owner. Agents are meant to have no access, but that isn't enforced until stage 3 |
 | `tasks-api` | The app, its tests and its workflow | The implementing agent. Agent changes to `.github/` come to the owner |
 
 ## One pull request, end to end
@@ -101,7 +101,8 @@ flowchart TD
 | `JudgeScore` is below `judge_threshold` | `BLOCK` | Agent |
 | A reserved path changed: `.github/`, agent instructions or migrations | `ESCALATE` | Owner |
 | The settings or the intent can't be used | `ESCALATE` | Owner |
-| A CI proof or the `JudgeScore` is missing, or CI is still running | `VERIFY` | Whatever is pending |
+| The PR changes nothing | `ESCALATE` | Owner |
+| A CI proof, the hidden tests or the `JudgeScore` is missing, or CI is still running | `VERIFY` | Whatever is pending |
 | None of these | `AUTHORIZE` | Nobody |
 
 `JudgeScore` can refuse a merge but never authorize one, and it only counts once everything else has passed. PR text is never an input.
@@ -119,7 +120,7 @@ The App's key is an environment secret that only `main` can use, because a workf
 
 ## Intents
 
-One file, with a title, one `Issue:` line and any sections. Each bullet names a test or says `Judge only`, apart from those under `Out of scope`. Everything else is free text.
+One file, with a title, one `Issue:` line and any sections. Each bullet names a test or says `Judge only`, apart from those under `Out of scope`, and at least one must name a test. Everything else is free text.
 
 ```markdown
 # Archive old notes
