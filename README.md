@@ -69,6 +69,12 @@ Code blocks are free text too. `load_intent` refuses an intent that breaks this,
 
 A failed read never counts as having no intents. The token for that repo is short-lived and read-only, and the key behind it stays in an environment only `main` can use.
 
+## Running a decision
+
+`run.py` runs one decision from a workflow on `main`, and it's the only part that talks to GitHub. It gathers the PR's changed files, CI results and linked issue, runs the acceptance tests, decides, and posts the receipt as the `mandate/decision` check. That check passes only on `AUTHORIZE`, because a required check also passes on neutral or skipped.
+
+Only the receipt is ever printed or posted. An Actions log on a public repo is public, so the acceptance tests' output is dropped, and if a run fails, only the error's type is shown. Those tests get no token. Anything that can't be read in full, such as a short list of changed files, stops the decision rather than being guessed at.
+
 ## Known limits
 
 - **Reserved paths:** these are found by path alone, so any `.github/` change comes to the owner, and SQL inside application code isn't seen.
