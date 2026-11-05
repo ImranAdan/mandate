@@ -41,7 +41,10 @@ def check(**changes):
     return mandate.CheckResult(**(fields | changes))
 
 
-def decide(delegation=None, paths=("tasks_api.py",), checks=None, score=None, intent=BOUND):
+PASSED = mandate.Acceptance(5, 5)
+
+
+def decide(delegation=None, paths=("tasks_api.py",), checks=None, score=None, intent=BOUND, acceptance=PASSED):
     return mandate.decide(
         load(SCORING) if delegation is None else delegation,
         pr=12,
@@ -49,6 +52,7 @@ def decide(delegation=None, paths=("tasks_api.py",), checks=None, score=None, in
         changed_paths=paths,
         checks=(check(),) if checks is None else checks,
         intent=intent,
+        acceptance=acceptance,
         judge_score=score,
     )
 
@@ -419,6 +423,8 @@ def test_an_intent_lists_its_criteria_and_their_proof():
         mandate.Criterion("Security", "The code contains no secrets.", None),
     )
     assert intent.commit == ""
+    assert intent.tests == TESTS
+    assert TESTS not in repr(intent)
     assert mandate.load_intent(INTENT, TESTS, INTENT_COMMIT).commit == INTENT_COMMIT
 
 
@@ -585,3 +591,65 @@ def test_a_read_failure_is_never_read_as_no_intents():
     with pytest.raises(mandate.IntentError, match="intents can't be read") as caught:
         mandate.read_intents(down, "o/intents", "tasks-api")
     assert "private" not in str(caught.value)
+
+
+# --- acceptance results ------------------------------------------------------
+
+JUDGED = mandate.Intent(
+    "A title",
+    2,
+    (
+        mandate.Criterion("Feature", "One.", "test_one"),
+        mandate.Criterion("Feature", "Two.", "test_two"),
+        mandate.Criterion("Security", "Three.", None),
+    ),
+)
+
+
+def junit(*cases):
+    return "<testsuites><testsuite>" + "".join(cases) + "</testsuite></testsuites>"
+
+
+def case(name, child=""):
+    return f'<testcase classname="c" name="{name}">{child}</testcase>'
+
+
+@pytest.mark.parametrize(
+    "report, passed, total",
+    [
+        (junit(case("test_one"), case("test_two")), 2, 2),
+        (junit(case("test_one"), case("test_two", "<failure/>")), 1, 2),
+        (junit(case("test_one"), case("test_two", "<error/>")), 1, 2),
+        (junit(case("test_one"), case("test_two", "<skipped/>")), 1, 2),
+        (junit(case("test_one")), 1, 2),
+        (junit(), 0, 2),
+        ("", 0, 2),
+        ("not xml", 0, 2),
+        (junit(case("test_one"), case("test_two"), case("test_extra", "<failure/>")), 2, 3),
+        (junit(case("test_one"), case("test_two[a]"), case("test_two[b]", "<failure/>")), 1, 2),
+        (junit(case("test_one"), case("test_two[a]"), case("test_two[b]")), 2, 2),
+    ],
+)
+def test_acceptance_results_count_only_what_really_passed(report, passed, total):
+    assert mandate.read_acceptance(report, JUDGED) == mandate.Acceptance(passed, total)
+
+
+@pytest.mark.parametrize(
+    "acceptance, outcome, expected, text",
+    [
+        (None, "VERIFY", ["ACCEPTANCE_MISSING"], "Waiting for proof: the acceptance tests haven't run."),
+        (mandate.Acceptance(3, 5), "BLOCK", ["ACCEPTANCE_FAILED"], "Not ready: 2 of 5 acceptance tests failed."),
+        (mandate.Acceptance(0, 0), "BLOCK", ["ACCEPTANCE_FAILED"], "Not ready: 0 of 0 acceptance tests failed."),
+    ],
+)
+def test_a_high_score_cannot_rescue_the_acceptance_tests(acceptance, outcome, expected, text):
+    decision = decide(score=0.99, acceptance=acceptance)
+    assert decision.outcome == outcome
+    assert codes(decision) == expected
+    assert decision.judge_score is None
+    assert mandate.message(decision) == text
+
+
+def test_acceptance_results_do_not_matter_without_an_intent():
+    decision = decide(intent=mandate.IntentUnbound("link exactly one issue"), acceptance=None)
+    assert codes(decision) == ["INTENT_UNBOUND"]
