@@ -8,6 +8,7 @@ JudgeScore can refuse a merge but can't authorize one.
 
 import ast
 import base64
+import json
 import re
 import tomllib
 import xml.etree.ElementTree as ElementTree
@@ -33,6 +34,8 @@ RESERVED = (
     ("migration", re.compile(r"(^|/)(migrations?|alembic)/|(^|/)schema\.(sql|prisma)$", re.I)),
 )
 MESSAGES = {"BLOCK": "Not ready", "ESCALATE": "Needs the owner", "VERIFY": "Waiting for proof"}
+ICONS = {"AUTHORIZE": "✅", "BLOCK": "❌", "ESCALATE": "👤", "VERIFY": "⏳"}
+UNSAFE_IN_A_PATH = re.compile(r"[^\w./ -]", re.ASCII)
 ISSUE_LINE = re.compile(r"Issue: #([1-9][0-9]*)")
 BULLET = re.compile(r"(?:[-*+]|[0-9]+[.)])(?:\s+(.*))?")
 CRITERION = re.compile(r"(.*\S)\s+(?:Test: `(test_\w+)`|Judge only)")
@@ -381,7 +384,8 @@ def _reserved_reasons(changed_paths: tuple[str, ...]) -> list[Reason]:
         return [Reason("NO_CHANGES", "ESCALATE", "the pull request changes nothing")]
     reasons = []
     for category, pattern in RESERVED:
-        paths = sorted(path for path in changed_paths if pattern.search(path))
+        # A file name is the agent's text, and these details reach a public check and log.
+        paths = sorted(UNSAFE_IN_A_PATH.sub("?", path) for path in changed_paths if pattern.search(path))
         if paths:
             reasons.append(Reason(f"RESERVED:{category}", "ESCALATE", ", ".join(paths)))
     return reasons
@@ -411,6 +415,50 @@ def message(decision: Decision) -> str:
         return "Ready to merge."
     details = "; ".join(r.detail for r in decision.reasons if r.outcome == decision.outcome)
     return f"{MESSAGES[decision.outcome]}: {details}."
+
+
+def check_summary(decision: Decision) -> str:
+    """The receipt as the pull request shows it."""
+    delegation = decision.delegation
+    if decision.outcome == "AUTHORIZE":
+        headline = "Ready to merge"
+        body = "This is a dry run, so it wasn't merged." if decision.dry_run else "Every proof passed, and the score cleared the threshold."
+    else:
+        headline = MESSAGES[decision.outcome]
+        body = message(decision).split(": ", 1)[1]
+    score = "Missing" if decision.judge_score is None else decision.judge_score
+    mode = "Dry run: nothing merges" if decision.dry_run else "Live: merges when ready"
+    intent = f"Issue #{decision.intent.issue}" if decision.intent else "None"
+    lines = [
+        f"## {ICONS[decision.outcome]} {headline}",
+        "",
+        body,
+        "",
+        "| | |",
+        "|---|---|",
+        f"| **Pull request** | #{decision.pr} |",
+        f"| **Commit** | `{decision.head_sha[:7]}` |",
+        f"| **JudgeScore** | {score} |",
+        f"| **Mode** | {mode} |",
+        f"| **Intent** | {intent} |",
+    ]
+    if decision.reasons:
+        lines += ["", "### What was found", ""]
+        for reason in decision.reasons:
+            if reason.code.startswith("RESERVED:"):
+                lines.append(f"- {ICONS[reason.outcome]} {MESSAGES[reason.outcome]}: `{reason.detail}`")
+            else:
+                lines.append(f"- {ICONS[reason.outcome]} {reason.detail}")
+    if delegation and delegation.warnings:
+        lines += ["", "### Warnings", ""]
+        lines += [f"- ⚠️ {warning}" for warning in delegation.warnings]
+    return "\n".join(lines) + "\n"
+
+
+def check_details(decision: Decision) -> str:
+    """The full receipt, folded away below the summary."""
+    record = json.dumps(receipt_record(decision), indent=2)
+    return f"<details>\n<summary>Full receipt</summary>\n\n```json\n{record}\n```\n\n</details>\n"
 
 
 def receipt_text(decision: Decision) -> str:

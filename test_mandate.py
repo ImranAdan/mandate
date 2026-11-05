@@ -661,7 +661,7 @@ def test_acceptance_results_do_not_matter_without_an_intent():
 
 def test_a_refusal_reads_as_a_summary():
     decision = decide(paths=("schema.sql",), acceptance=mandate.Acceptance(2, 5))
-    assert mandate.check_title(decision) == "Not ready: 3 of 5 acceptance tests failed."
+    assert mandate.message(decision) == "Not ready: 3 of 5 acceptance tests failed."
     assert mandate.check_summary(decision) == (
         "## ❌ Not ready\n"
         "\n"
@@ -684,7 +684,7 @@ def test_a_refusal_reads_as_a_summary():
 
 def test_a_pass_reads_as_a_summary():
     decision = decide(load(LIVE), score=0.92)
-    assert mandate.check_title(decision) == "Ready to merge."
+    assert mandate.message(decision) == "Ready to merge."
     assert mandate.check_summary(decision) == (
         "## ✅ Ready to merge\n"
         "\n"
@@ -736,6 +736,7 @@ def test_the_full_receipt_is_folded_away():
         ("migrations/`](x).sql", "migrations/???x?.sql"),
         ("migrations/## ✅ Ready.sql", "migrations/?? ? Ready.sql"),
         ("migrations/a|b.sql", "migrations/a?b.sql"),
+        ("migrations/é.sql", "migrations/?.sql"),
         ("migrations/good-file_1.sql", "migrations/good-file_1.sql"),
     ],
 )
