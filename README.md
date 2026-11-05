@@ -31,6 +31,32 @@ PR text is never an input, and a `JudgeScore` can refuse a merge but can't autho
 
 Any other setting makes the whole file invalid, and then every pull request comes to the owner.
 
+## Intent format
+
+An intent has a title, one `Issue:` line, and any sections. Everything is free text except the bullets: each one names a test or says `Judge only`, apart from those under `Out of scope`.
+
+```markdown
+# Filter tasks by done state
+
+Issue: #2
+
+## Feature
+
+`GET /tasks` accepts an optional `done` filter.
+
+- `done=false` returns only open tasks. Test: `test_open_only`
+
+## Security
+
+- The code contains no secrets. Judge only
+
+## Out of scope
+
+Search, sorting and paging.
+```
+
+`load_intent` refuses an intent that breaks this, including one naming a test that doesn't exist or naming no tests at all.
+
 ## Known limits
 
 - **Reserved paths:** these are found by path alone, so any `.github/` change comes to the owner, and SQL inside application code isn't seen.

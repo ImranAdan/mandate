@@ -6,6 +6,7 @@ AUTHORIZE means there is no reason at all. PR text is never an input, and a
 JudgeScore can refuse a merge but can't authorize one.
 """
 
+import ast
 import re
 import tomllib
 from dataclasses import dataclass
@@ -29,10 +30,32 @@ RESERVED = (
     ("migration", re.compile(r"(^|/)(migrations?|alembic)/|(^|/)schema\.(sql|prisma)$", re.I)),
 )
 MESSAGES = {"BLOCK": "Not ready", "ESCALATE": "Needs the owner", "VERIFY": "Waiting for proof"}
+ISSUE_LINE = re.compile(r"Issue: #([1-9][0-9]*)")
+BULLET = re.compile(r"(?:[-*+]|[0-9]+[.)])\s+(.*)")
+CRITERION = re.compile(r"(.*\S)\s+(?:Test: `(test_\w+)`|Judge only)")
+OUT_OF_SCOPE = "out of scope"
 
 
 class DelegationError(ValueError):
     """The owner's settings can't be used, so every pull request comes to the owner."""
+
+
+class IntentError(ValueError):
+    """An intent that breaks the format can't judge anything."""
+
+
+@dataclass(frozen=True)
+class Criterion:
+    section: str
+    text: str
+    test: str | None  # None means Judge only
+
+
+@dataclass(frozen=True)
+class Intent:
+    title: str
+    issue: int
+    criteria: tuple[Criterion, ...]
 
 
 @dataclass(frozen=True)
@@ -158,6 +181,47 @@ def _proofs(table: object) -> tuple[Proof, ...]:
             raise DelegationError(f"proof {name} must name a workflow in .github/workflows")
         proofs.append(Proof(name, proof["check"], workflow))
     return tuple(proofs)
+
+
+def load_intent(text: str, tests_source: str) -> Intent:
+    """One intent and its criteria. Everything but the bullets is free text."""
+    title = None
+    issues = []
+    section = ""
+    criteria = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if title is None and line.startswith("# "):
+            title = line[2:].strip()
+        elif line.startswith("## "):
+            section = line[3:].strip()
+        elif issue := ISSUE_LINE.fullmatch(stripped):
+            issues.append(int(issue[1]))
+        elif (bullet := BULLET.fullmatch(stripped)) and section.lower() != OUT_OF_SCOPE:
+            criterion = CRITERION.fullmatch(bullet[1])
+            if not criterion:
+                raise IntentError(f"needs a test or Judge only: {stripped}")
+            criteria.append(Criterion(section, criterion[1], criterion[2]))
+
+    if not title:
+        raise IntentError("needs a title")
+    if len(issues) != 1:
+        raise IntentError("needs exactly one Issue line, such as Issue: #2")
+    named = {criterion.test for criterion in criteria} - {None}
+    if not named:
+        raise IntentError("needs at least one named test")
+    missing = sorted(named - _test_functions(tests_source))
+    if missing:
+        raise IntentError(f"names tests that don't exist: {', '.join(missing)}")
+    return Intent(title, issues[0], tuple(criteria))
+
+
+def _test_functions(source: str) -> set[str]:
+    try:
+        tree = ast.parse(source)
+    except SyntaxError as error:
+        raise IntentError(f"its tests can't be read: {error}") from error
+    return {node.name for node in tree.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))}
 
 
 def decide(

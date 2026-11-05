@@ -412,6 +412,10 @@ def test_an_intent_lists_its_criteria_and_their_proof():
     )
 
 
+def test_the_first_heading_is_the_title():
+    assert mandate.load_intent(INTENT + "\n# Another heading\n", TESTS).title == "Filter tasks by done state"
+
+
 def test_any_section_name_works():
     text = INTENT.replace("## Security", "## Performance")
     assert mandate.load_intent(text, TESTS).criteria[2].section == "Performance"
