@@ -1,3 +1,4 @@
+import base64
 import json
 
 import pytest
@@ -19,6 +20,8 @@ workflow = ".github/workflows/ci.yml"
 """
 SCORING = CONFIG.replace('judge_model = "none"', 'judge_model = "some-model"')
 LIVE = SCORING.replace("dry_run = true", "dry_run = false")
+INTENT_COMMIT = "d" * 40
+BOUND = mandate.Intent("A title", 2, (), INTENT_COMMIT)
 
 
 def load(text=CONFIG):
@@ -38,13 +41,14 @@ def check(**changes):
     return mandate.CheckResult(**(fields | changes))
 
 
-def decide(delegation=None, paths=("tasks_api.py",), checks=None, score=None):
+def decide(delegation=None, paths=("tasks_api.py",), checks=None, score=None, intent=BOUND):
     return mandate.decide(
         load(SCORING) if delegation is None else delegation,
         pr=12,
         head_sha=HEAD,
         changed_paths=paths,
         checks=(check(),) if checks is None else checks,
+        intent=intent,
         judge_score=score,
     )
 
@@ -348,6 +352,8 @@ def test_the_record_keeps_exact_identifiers():
         "pr": 12,
         "commit": HEAD,
         "delegation_commit": DELEGATION_COMMIT,
+        "intent_issue": 2,
+        "intent_commit": INTENT_COMMIT,
         "judge_model": "some-model",
         "judge_score": 0.92,
         "dry_run": False,
@@ -363,6 +369,8 @@ def test_the_record_of_an_invalid_delegation_has_no_settings_to_name():
     record = mandate.receipt_record(decide(mandate.DelegationError("bad")))
     assert record["repository"] is None
     assert record["delegation_commit"] is None
+    assert record["intent_issue"] is None
+    assert record["intent_commit"] is None
     assert record["judge_model"] is None
     assert record["dry_run"] is True
     assert record["message"] == "Needs the owner: bad."
@@ -410,6 +418,8 @@ def test_an_intent_lists_its_criteria_and_their_proof():
         mandate.Criterion("Feature", "An invalid value returns 422.", "test_bad_filter"),
         mandate.Criterion("Security", "The code contains no secrets.", None),
     )
+    assert intent.commit == ""
+    assert mandate.load_intent(INTENT, TESTS, INTENT_COMMIT).commit == INTENT_COMMIT
 
 
 def test_the_first_heading_is_the_title():
@@ -474,3 +484,104 @@ def test_a_criterion_after_out_of_scope_still_needs_proof():
     text = INTENT + "\n## Reliability\n\n- It never crashes.\n"
     with pytest.raises(mandate.IntentError, match="needs a test or Judge only: - It never crashes."):
         mandate.load_intent(text, TESTS)
+
+
+# --- finding a pull request's intent -----------------------------------------
+
+
+def test_a_pr_linking_one_claimed_issue_finds_its_intent():
+    other = mandate.Intent("Other", 3, ())
+    assert mandate.find_intent((2,), (other, BOUND)) is BOUND
+
+
+@pytest.mark.parametrize(
+    "linked, message",
+    [
+        ((), "link exactly one issue"),
+        ((2, 3), "link exactly one issue"),
+        ((9,), "no intent claims issue #9"),
+    ],
+)
+def test_a_pr_without_one_claimed_issue_is_unbound(linked, message):
+    with pytest.raises(mandate.IntentUnbound, match=message):
+        mandate.find_intent(linked, (BOUND, mandate.Intent("Other", 3, ())))
+
+
+def test_two_intents_claiming_one_issue_are_invalid():
+    with pytest.raises(mandate.IntentError, match="more than one intent claims issue #2"):
+        mandate.find_intent((2,), (BOUND, mandate.Intent("Other", 2, ())))
+
+
+def test_an_unbound_pr_blocks_whatever_the_score():
+    decision = decide(score=0.99, intent=mandate.IntentUnbound("no intent claims issue #9"))
+    assert decision.outcome == "BLOCK"
+    assert codes(decision) == ["INTENT_UNBOUND"]
+    assert decision.judge_score is None
+    assert mandate.message(decision) == "Not ready: no intent claims issue #9."
+    assert mandate.receipt_record(decision)["intent_issue"] is None
+
+
+def test_an_invalid_intent_comes_to_the_owner_without_quoting_it():
+    private = "needs a test or Judge only: - A private requirement."
+    decision = decide(score=0.99, intent=mandate.IntentError(private))
+    assert decision.outcome == "ESCALATE"
+    assert codes(decision) == ["INTENT_INVALID"]
+    assert decision.judge_score is None
+    assert mandate.message(decision) == "Needs the owner: the intent can't be used."
+    assert "private" not in json.dumps(mandate.receipt_record(decision))
+
+
+# --- reading intents ---------------------------------------------------------
+
+
+def content(text):
+    return {"content": base64.b64encode(text.encode()).decode(), "encoding": "base64"}
+
+
+def github(files):
+    """A fake GitHub holding files in one folder at one commit."""
+    calls = []
+
+    def get(path):
+        calls.append(path)
+        if path == "repos/o/intents/commits/main":
+            return {"sha": INTENT_COMMIT}
+        if path == f"repos/o/intents/contents/tasks-api?ref={INTENT_COMMIT}":
+            return [{"name": name, "type": "file"} for name in files]
+        for name, text in files.items():
+            if path == f"repos/o/intents/contents/tasks-api/{name}?ref={INTENT_COMMIT}":
+                return content(text)
+        raise RuntimeError(f"not found: {path}")
+
+    get.calls = calls
+    return get
+
+
+def test_intents_are_all_read_at_one_commit():
+    get = github({"filter-by-done.md": INTENT, "test_filter_by_done.py": TESTS})
+    intents = mandate.read_intents(get, "o/intents", "tasks-api")
+    assert [(i.title, i.issue, i.commit) for i in intents] == [("Filter tasks by done state", 2, INTENT_COMMIT)]
+    assert get.calls[0] == "repos/o/intents/commits/main"
+    assert all(f"ref={INTENT_COMMIT}" in call for call in get.calls[1:])
+
+
+@pytest.mark.parametrize(
+    "files, message",
+    [
+        ({"filter-by-done.md": INTENT}, "filter-by-done.md has no test_filter_by_done.py"),
+        ({"bad.md": "no title", "test_bad.py": TESTS}, "bad.md: needs a title"),
+    ],
+)
+def test_one_bad_intent_refuses_them_all(files, message):
+    good = {"filter-by-done.md": INTENT, "test_filter_by_done.py": TESTS} if "bad.md" in files else {}
+    with pytest.raises(mandate.IntentError, match=message):
+        mandate.read_intents(github(good | files), "o/intents", "tasks-api")
+
+
+def test_a_read_failure_is_never_read_as_no_intents():
+    def down(path):
+        raise RuntimeError("HTTP 500 with a private detail")
+
+    with pytest.raises(mandate.IntentError, match="intents can't be read") as caught:
+        mandate.read_intents(down, "o/intents", "tasks-api")
+    assert "private" not in str(caught.value)

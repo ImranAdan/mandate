@@ -7,8 +7,10 @@ JudgeScore can refuse a merge but can't authorize one.
 """
 
 import ast
+import base64
 import re
 import tomllib
+from collections.abc import Callable
 from dataclasses import dataclass
 
 GITHUB_ACTIONS = "github-actions"
@@ -41,7 +43,11 @@ class DelegationError(ValueError):
 
 
 class IntentError(ValueError):
-    """An intent that breaks the format can't judge anything."""
+    """The intents can't be used, which is for the owner to fix."""
+
+
+class IntentUnbound(ValueError):
+    """The pull request doesn't link to an intent, which is for the agent to fix."""
 
 
 @dataclass(frozen=True)
@@ -56,6 +62,7 @@ class Intent:
     title: str
     issue: int
     criteria: tuple[Criterion, ...]
+    commit: str = ""
 
 
 @dataclass(frozen=True)
@@ -107,6 +114,7 @@ class Decision:
     reasons: tuple[Reason, ...]
     judge_score: float | None
     dry_run: bool
+    intent: Intent | None = None
 
 
 def load_delegation(text: str, repository: str, commit: str) -> Delegation:
@@ -183,7 +191,7 @@ def _proofs(table: object) -> tuple[Proof, ...]:
     return tuple(proofs)
 
 
-def load_intent(text: str, tests_source: str) -> Intent:
+def load_intent(text: str, tests_source: str, commit: str = "") -> Intent:
     """One intent and its criteria. Everything but the bullets is free text."""
     title = None
     issues = []
@@ -220,7 +228,7 @@ def load_intent(text: str, tests_source: str) -> Intent:
     missing = sorted(named - _test_functions(tests_source))
     if missing:
         raise IntentError(f"names tests that don't exist: {', '.join(missing)}")
-    return Intent(title, int(issues[0][1]), tuple(criteria))
+    return Intent(title, int(issues[0][1]), tuple(criteria), commit)
 
 
 def _test_functions(source: str) -> set[str]:
@@ -231,12 +239,52 @@ def _test_functions(source: str) -> set[str]:
     return {node.name for node in tree.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))}
 
 
+def read_intents(get: Callable[[str], object], repo: str, app: str) -> tuple[Intent, ...]:
+    """Every intent for one app, all read at one commit. One bad file refuses them all."""
+
+    try:
+        commit = get(f"repos/{repo}/commits/main")["sha"]
+        names = {entry["name"] for entry in get(f"repos/{repo}/contents/{app}?ref={commit}")}
+
+        def read(name: str) -> str:
+            return base64.b64decode(get(f"repos/{repo}/contents/{app}/{name}?ref={commit}")["content"]).decode()
+
+        intents = []
+        for name in sorted(n for n in names if n.endswith(".md")):
+            tests = f"test_{name.removesuffix('.md').replace('-', '_')}.py"
+            if tests not in names:
+                raise IntentError(f"{name} has no {tests}")
+            try:
+                intents.append(load_intent(read(name), read(tests), commit))
+            except IntentError as error:
+                raise IntentError(f"{name}: {error}") from error
+    except IntentError:
+        raise
+    except Exception as error:  # a failed read must never look like having no intents
+        raise IntentError("intents can't be read") from error
+    return tuple(intents)
+
+
+def find_intent(linked_issues: tuple[int, ...], intents: tuple[Intent, ...]) -> Intent:
+    """The one intent a pull request is judged against, from the issue it links."""
+    if len(linked_issues) != 1:
+        raise IntentUnbound("link exactly one issue")
+    issue = linked_issues[0]
+    matches = [intent for intent in intents if intent.issue == issue]
+    if not matches:
+        raise IntentUnbound(f"no intent claims issue #{issue}")
+    if len(matches) > 1:
+        raise IntentError(f"more than one intent claims issue #{issue}")
+    return matches[0]
+
+
 def decide(
     delegation: Delegation | DelegationError,
     pr: int,
     head_sha: str,
     changed_paths: tuple[str, ...],
     checks: tuple[CheckResult, ...],
+    intent: Intent | IntentUnbound | IntentError,
     judge_score: object = None,
 ) -> Decision:
     """One outcome and every reason for one exact commit of a pull request.
@@ -250,14 +298,23 @@ def decide(
 
     proofs = _proof_reasons(delegation, head_sha, checks)
     reserved = _reserved_reasons(changed_paths)
-    reasons = [*proofs, *reserved]
+    reasons = [*proofs, *reserved, *_intent_reasons(intent)]
     score = None
     if not reasons:
         score, judged = _judged(delegation, judge_score)
         reasons += judged
     reasons.sort(key=lambda r: (OUTCOMES.index(r.outcome), r.code))
     outcome = reasons[0].outcome if reasons else "AUTHORIZE"
-    return Decision(delegation, pr, head_sha, outcome, tuple(reasons), score, delegation.dry_run)
+    bound = intent if isinstance(intent, Intent) else None
+    return Decision(delegation, pr, head_sha, outcome, tuple(reasons), score, delegation.dry_run, bound)
+
+
+def _intent_reasons(intent: Intent | IntentUnbound | IntentError) -> list[Reason]:
+    if isinstance(intent, IntentUnbound):
+        return [Reason("INTENT_UNBOUND", "BLOCK", str(intent))]
+    if isinstance(intent, IntentError):  # its text can quote the private intent, and this message is public
+        return [Reason("INTENT_INVALID", "ESCALATE", "the intent can't be used")]
+    return []
 
 
 def _proof_reasons(delegation: Delegation, head_sha: str, checks: tuple[CheckResult, ...]) -> list[Reason]:
@@ -339,6 +396,8 @@ def receipt_record(decision: Decision) -> dict[str, object]:
         "pr": decision.pr,
         "commit": decision.head_sha,
         "delegation_commit": delegation.commit if delegation else None,
+        "intent_issue": decision.intent.issue if decision.intent else None,
+        "intent_commit": decision.intent.commit if decision.intent else None,
         "judge_model": delegation.judge_model if delegation else None,
         "judge_score": decision.judge_score,
         "dry_run": decision.dry_run,
