@@ -474,3 +474,13 @@ def test_an_escalated_refusal_counts_too():
     earlier = refused(first, second) | {third: [receipt(commit=third, code="JUDGE_REFUSALS")]}
     _, asked = judged(earlier=earlier, commits=(first, second, third, SHA))
     assert asked == []
+
+
+def test_a_rerun_of_a_third_refusal_keeps_its_score_and_its_count():
+    first, second = "1" * 40, "2" * 40
+    earlier = refused(first, second) | {SHA: [receipt(commit=SHA, score=0.4, code="JUDGE_REFUSALS")]}
+    decision, asked = judged(earlier=earlier, commits=(first, second, SHA))
+    assert asked == []
+    assert decision.outcome == "ESCALATE"
+    assert decision.judge_score == 0.4
+    assert decision.reasons[0].detail == "the Judge has refused this pull request 3 times"
