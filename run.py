@@ -15,6 +15,8 @@ import tempfile
 import urllib.request
 from collections.abc import Callable
 
+import anthropic
+
 import mandate
 
 DELEGATION_REPO = "ImranAdan/mandate-delegation"
@@ -29,6 +31,7 @@ JUDGE_REPLY_FORMAT = {
             "type": "object",
             "properties": {"score": {"type": "number"}, "reason": {"type": "string"}},
             "required": ["score", "reason"],
+            "additionalProperties": False,
         },
     },
 }
@@ -243,6 +246,27 @@ def ask_local_model(model: str, prompt: str) -> str:
         return json.load(response)["choices"][0]["message"]["content"]
 
 
+def ask_claude(model: str, prompt: str, key: str) -> str:
+    """Ask a Claude model through Anthropic's API. Anything but a finished answer raises, so it gives no score."""
+    if not key:  # without it the SDK would look for other credentials, possibly another account's
+        raise RuntimeError("no ANTHROPIC_API_KEY")
+    response = anthropic.Anthropic(api_key=key).messages.create(
+        model=model,
+        max_tokens=16000,
+        system=mandate.JUDGE_SYSTEM,
+        messages=[{"role": "user", "content": prompt}],
+        output_config={"effort": "high", "format": {"type": "json_schema", "schema": JUDGE_REPLY_FORMAT["json_schema"]["schema"]}},
+    )
+    if response.stop_reason != "end_turn":
+        raise RuntimeError(response.stop_reason)
+    return next(block.text for block in response.content if block.type == "text")
+
+
+def asker(key: str | None) -> Callable[[str, str], str]:
+    """The adapter for a model name: claude-* goes to Anthropic, anything else to the local server."""
+    return lambda model, prompt: ask_claude(model, prompt, key) if model.startswith("claude-") else ask_local_model(model, prompt)
+
+
 def conclusion(outcome: str) -> str:
     """Only AUTHORIZE passes, because a required check also passes on neutral or skipped."""
     return "success" if outcome == "AUTHORIZE" else "failure"
@@ -297,6 +321,7 @@ def main() -> int:
     base_url = os.environ["BASE_URL"]
     token = os.environ.pop("GH_TOKEN")
     private_token = os.environ.pop("INTENT_TOKEN")
+    claude_key = os.environ.pop("ANTHROPIC_API_KEY", None)
 
     def get(path: str) -> object:
         return _gh(token, path)
@@ -313,7 +338,7 @@ def main() -> int:
             lambda number: _linked_issues(token, repo, number),
             lambda intent: run_acceptance(intent, base_url),
             lambda number: _read_diff(token, repo, number),
-            ask_local_model,
+            asker(claude_key),
         )
     except Refused as refused:
         _post_check(token, repo, sha, "BLOCK", f"Not ready: {refused}.", f"## ❌ Not ready\n\n{refused}.\n", "")
