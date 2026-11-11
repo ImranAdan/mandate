@@ -523,11 +523,11 @@ def _shown_response(response: str) -> str:
     return shown if len(shown) <= MAX_RESPONSE_SHOWN else f"{shown[:MAX_RESPONSE_SHOWN]} [cut]"
 
 
-def check_details(decision: Decision) -> str:
+def check_details(decision: Decision, summary: str = "Full receipt") -> str:
     """The full receipt, folded away below the summary."""
     # A backtick in the model's reply could close the fence, so it's escaped; JSON reads it back unchanged.
     record = json.dumps(receipt_record(decision), indent=2).replace("`", "\\u0060")
-    return f"<details>\n<summary>Full receipt</summary>\n\n```json\n{record}\n```\n\n</details>\n"
+    return f"<details>\n<summary>{summary}</summary>\n\n```json\n{record}\n```\n\n</details>\n"
 
 
 def read_receipt(details: str | None) -> dict | None:
@@ -543,6 +543,7 @@ def read_receipt(details: str | None) -> dict | None:
 
 
 COMMENT_MARKER = "<!-- mandate:decision -->"
+MAX_COMMENT_RECEIPT = 50_000  # GitHub caps a comment at 65,536 characters
 PROOF_SHOWN = {  # worst first
     "CHECK_WRONG_SOURCE": "❌ From the wrong source",
     "PROOF_FAILED": "❌ Failed",
@@ -589,15 +590,19 @@ def pr_comment(decision: Decision, merged_as: str | None = None, closed_issue: i
     if acceptance is None:
         hidden = "⏳ Not run"
     else:
-        hidden = f"{'✅' if acceptance.passed == acceptance.total else '❌'} {acceptance.passed} of {acceptance.total} passed"
+        hidden = f"{'✅' if acceptance.passed == acceptance.total > 0 else '❌'} {acceptance.passed} of {acceptance.total} passed"
     reserved = [reason.detail for reason in decision.reasons if reason.code.startswith("RESERVED:")]
+    ci = next((shown for code, shown in PROOF_SHOWN.items() if code in codes), "✅ Passed")
+    paths = "👤 `" + ", ".join(reserved) + "`" if reserved else "✅ None changed"
+    if decision.delegation is None:  # the settings couldn't be used, so nothing else was checked
+        ci = paths = "⏳ Not checked"
     lines += [
         "",
         "| Proof | Result |",
         "| --- | --- |",
-        f"| CI | {next((shown for code, shown in PROOF_SHOWN.items() if code in codes), '✅ Passed')} |",
+        f"| CI | {ci} |",
         f"| Hidden acceptance tests | {hidden} |",
-        f"| Reserved paths | {'👤 `' + ', '.join(reserved) + '`' if reserved else '✅ None changed'} |",
+        f"| Reserved paths | {paths} |",
         f"| JudgeScore | {judged} |",
     ]
     reason = _judge_reason(decision.judge_response)
@@ -609,11 +614,17 @@ def pr_comment(decision: Decision, merged_as: str | None = None, closed_issue: i
         lines += ["", f"**Next:** {NEXT[decision.outcome]}"]
     lines += [
         "",
-        check_details(decision).replace("Full receipt", "Receipt").rstrip("\n"),
+        _receipt_for_comment(decision),
         "",
         "<sub>Mandate decides each commit after CI finishes, and updates this comment on every new commit.</sub>",
     ]
     return "\n".join([COMMENT_MARKER, *lines]) + "\n"
+
+
+def _receipt_for_comment(decision: Decision) -> str:
+    """The receipt, unless it would push the comment past GitHub's limit; the check always has it."""
+    receipt = check_details(decision, "Receipt").rstrip("\n")
+    return receipt if len(receipt) <= MAX_COMMENT_RECEIPT else "The receipt is too long to show here. It's on the `mandate/decision` check."
 
 
 def _judge_reason(response: str | None) -> str | None:
@@ -624,9 +635,9 @@ def _judge_reason(response: str | None) -> str | None:
         return None
     if not isinstance(reason, str) or not reason.strip():
         return None
-    shown = " ".join(reason.split())
-    shown = shown if len(shown) <= MAX_RESPONSE_SHOWN else f"{shown[:MAX_RESPONSE_SHOWN]} [cut]"
-    return MARKDOWN.sub(r"\\\1", shown)
+    # GitHub links @mentions and #references after rendering, so a backslash alone doesn't stop them;
+    # an invisible word joiner after each does.
+    return MARKDOWN.sub(r"\\\1", _shown_response(reason)).replace("@", "@\u2060").replace("#", "#\u2060")
 
 
 def receipt_text(decision: Decision) -> str:

@@ -419,7 +419,6 @@ def test_an_earlier_pass_is_never_reused_because_it_could_be_forged(forged):
 @pytest.mark.parametrize(
     "earlier",
     [
-        receipt(delegation_commit="f" * 40),
         receipt(intent_commit="f" * 40),
         receipt(score=None),
         receipt(pr=8),
@@ -567,3 +566,9 @@ def test_mandate_updates_only_its_own_comment():
     ]
     assert run.own_comment(comments) == 3
     assert run.own_comment(comments[:2]) is None
+
+
+def test_a_refusal_sticks_when_the_settings_change():
+    decision, asked = judged(earlier={SHA: [receipt(score=0.4, delegation_commit="f" * 40)]}, reply='{"score": 0.99, "reason": "Rerolled."}')
+    assert asked == []
+    assert decision.judge_score == 0.4

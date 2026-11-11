@@ -167,7 +167,7 @@ def evaluate(
     refusals = prior_refusals(records, sha)
     if refusals >= mandate.REFUSAL_LIMIT:
         return decide(refusals=refusals)
-    earlier = earlier_score(records, sha, delegation.commit, intent.commit, delegation.judge_threshold)
+    earlier = earlier_score(records, sha, intent.commit, delegation.judge_threshold)
     if earlier:
         return decide(earlier["judge_score"], earlier.get("judge_response"), refusals)
     return decide(*_judged(delegation, intent, number, read_diff, ask_judge), refusals)
@@ -202,10 +202,11 @@ def prior_refusals(records: list[dict], sha: str) -> int:
     )
 
 
-def earlier_score(records: list[dict], sha: str, delegation_commit: str, intent_commit: str, threshold: float) -> dict | None:
-    """The newest refusal for this commit under these settings and intent, so a rerun can't re-roll it.
+def earlier_score(records: list[dict], sha: str, intent_commit: str, threshold: float) -> dict | None:
+    """The newest refusal for this commit and intent, so a rerun can't re-roll it.
 
-    The settings commit changes whenever the model does, and receipts never name the model.
+    A refusal sticks even if the settings or model change, because the settings repo's
+    commit moves with any unrelated change there; a fixed change comes as a new commit.
 
     A passing score is never reused, because a workflow on any branch can forge one
     in this history. The Judge is asked again instead.
@@ -214,7 +215,6 @@ def earlier_score(records: list[dict], sha: str, delegation_commit: str, intent_
         score = record.get("judge_score")
         if (
             record.get("commit") == sha
-            and record.get("delegation_commit") == delegation_commit
             and record.get("intent_commit") == intent_commit
             and type(score) in (int, float)
             and score < threshold

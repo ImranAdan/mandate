@@ -936,7 +936,32 @@ def test_the_judges_reason_cant_link_mention_or_format():
     comment = mandate.pr_comment(decide(load(LIVE), score=0.9, judge_response=json.dumps({"score": 0.9, "reason": reason})))
     quoted = next(line for line in comment.splitlines() if line.startswith("> **The Judge:**")).removeprefix("> **The Judge:** ")
     assert re.search(r"(?<!\\)[\[\]()<>@*`]", quoted) is None  # every special character is escaped
-    assert quoted.startswith("See \\[docs\\]\\(https\\://evil\\.example\\) \\@owner")
+    assert quoted.startswith("See \\[docs\\]\\(https\\://evil\\.example\\) \\@\u2060owner")
+
+
+def test_the_judges_reason_cant_mention_anyone_or_reference_an_issue():
+    comment = mandate.pr_comment(decide(load(LIVE), score=0.9, judge_response='{"score": 0.9, "reason": "Ping @owner about #7."}'))
+    quoted = next(line for line in comment.splitlines() if line.startswith("> **The Judge:**"))
+    assert "@owner" not in quoted and "#7" not in quoted  # the receipt keeps them, in a code block GitHub doesn't link
+    assert "@\u2060owner" in quoted and "#\u20607" in quoted
+
+
+def test_nothing_shows_as_checked_when_the_settings_cant_be_used():
+    comment = mandate.pr_comment(decide(mandate.DelegationError("bad settings"), paths=(".github/workflows/ci.yml",)))
+    assert "| CI | ⏳ Not checked |" in comment
+    assert "| Reserved paths | ⏳ Not checked |" in comment
+
+
+def test_no_tests_run_shows_as_a_failure():
+    assert "| Hidden acceptance tests | ❌ 0 of 0 passed |" in mandate.pr_comment(decide(load(LIVE), acceptance=mandate.Acceptance(0, 0)))
+
+
+def test_a_huge_receipt_stays_on_the_check():
+    response = json.dumps({"score": 0.9, "reason": "x" * 60_000})
+    comment = mandate.pr_comment(decide(load(LIVE), score=0.9, judge_response=response))
+    assert len(comment) < 65_536
+    assert "It's on the `mandate/decision` check." in comment
+    assert "x" * 60_000 in mandate.check_details(decide(load(LIVE), score=0.9, judge_response=response))
 
 
 def test_nothing_mandate_posts_names_the_model():
