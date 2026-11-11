@@ -380,11 +380,11 @@ def test_an_oversized_change_is_never_sent():
 OTHER = "e" * 40
 
 
-def receipt(score=0.4, commit=SHA, model="a-model", intent_commit=INTENT_COMMIT, pr=7, code="JUDGE_SCORE_LOW", response="earlier"):
+def receipt(score=0.4, commit=SHA, delegation_commit=DELEGATION_COMMIT, intent_commit=INTENT_COMMIT, pr=7, code="JUDGE_SCORE_LOW", response="earlier"):
     record = {
         "pr": pr,
         "commit": commit,
-        "judge_model": model,
+        "delegation_commit": delegation_commit,
         "intent_commit": intent_commit,
         "judge_score": score,
         "judge_response": response,
@@ -419,7 +419,7 @@ def test_an_earlier_pass_is_never_reused_because_it_could_be_forged(forged):
 @pytest.mark.parametrize(
     "earlier",
     [
-        receipt(model="another-model"),
+        receipt(delegation_commit="f" * 40),
         receipt(intent_commit="f" * 40),
         receipt(score=None),
         receipt(pr=8),
@@ -556,3 +556,14 @@ def test_claude_is_not_asked_without_a_key(claude, key):
 def test_only_an_authorize_outside_a_dry_run_merges(outcome, dry_run, merges):
     decision = mandate.Decision(None, 7, SHA, outcome, (), None, dry_run)
     assert run.should_merge(decision) is merges
+
+
+def test_mandate_updates_only_its_own_comment():
+    marked = mandate.COMMENT_MARKER + "\nold"
+    comments = [
+        {"id": 1, "user": {"login": "someone"}, "body": marked},
+        {"id": 2, "user": {"login": "github-actions[bot]"}, "body": "unrelated"},
+        {"id": 3, "user": {"login": "github-actions[bot]"}, "body": marked},
+    ]
+    assert run.own_comment(comments) == 3
+    assert run.own_comment(comments[:2]) is None

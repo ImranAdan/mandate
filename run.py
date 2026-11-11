@@ -167,7 +167,7 @@ def evaluate(
     refusals = prior_refusals(records, sha)
     if refusals >= mandate.REFUSAL_LIMIT:
         return decide(refusals=refusals)
-    earlier = earlier_score(records, sha, delegation.judge_model, intent.commit, delegation.judge_threshold)
+    earlier = earlier_score(records, sha, delegation.commit, intent.commit, delegation.judge_threshold)
     if earlier:
         return decide(earlier["judge_score"], earlier.get("judge_response"), refusals)
     return decide(*_judged(delegation, intent, number, read_diff, ask_judge), refusals)
@@ -202,8 +202,10 @@ def prior_refusals(records: list[dict], sha: str) -> int:
     )
 
 
-def earlier_score(records: list[dict], sha: str, model: str, intent_commit: str, threshold: float) -> dict | None:
-    """The newest refusal for this commit from this model and intent, so a rerun can't re-roll it.
+def earlier_score(records: list[dict], sha: str, delegation_commit: str, intent_commit: str, threshold: float) -> dict | None:
+    """The newest refusal for this commit under these settings and intent, so a rerun can't re-roll it.
+
+    The settings commit changes whenever the model does, and receipts never name the model.
 
     A passing score is never reused, because a workflow on any branch can forge one
     in this history. The Judge is asked again instead.
@@ -212,7 +214,7 @@ def earlier_score(records: list[dict], sha: str, model: str, intent_commit: str,
         score = record.get("judge_score")
         if (
             record.get("commit") == sha
-            and record.get("judge_model") == model
+            and record.get("delegation_commit") == delegation_commit
             and record.get("intent_commit") == intent_commit
             and type(score) in (int, float)
             and score < threshold
@@ -279,9 +281,32 @@ def should_merge(decision: mandate.Decision) -> bool:
     return decision.outcome == "AUTHORIZE" and not decision.dry_run
 
 
-def _merge(token: str, repo: str, number: int, sha: str) -> None:
-    """Merge exactly this commit. GitHub refuses if the branch has moved on since."""
-    _gh(token, f"repos/{repo}/pulls/{number}/merge", "--method", "PUT", "-f", f"sha={sha}", "-f", "merge_method=merge")
+def _merge(token: str, repo: str, number: int, sha: str) -> str:
+    """Merge exactly this commit and return the merge commit. GitHub refuses if the branch has moved on since."""
+    return _gh(token, f"repos/{repo}/pulls/{number}/merge", "--method", "PUT", "-f", f"sha={sha}", "-f", "merge_method=merge")["sha"]
+
+
+def _close_issue(token: str, repo: str, issue: int, number: int, merged_as: str) -> None:
+    """Say on the issue what closed it, then close it. A closing keyword doesn't fire for this token's merges."""
+    body = f"Done in #{number}, which Mandate merged as {merged_as[:7]}."
+    _gh(token, f"repos/{repo}/issues/{issue}/comments", "--method", "POST", "-f", f"body={body}")
+    _gh(token, f"repos/{repo}/issues/{issue}", "--method", "PATCH", "-f", "state=closed", "-f", "state_reason=completed")
+
+
+def own_comment(comments: list[dict]) -> int | None:
+    """Mandate's comment on the pull request, if it has one, so each decision updates it."""
+    for comment in comments:
+        if comment["user"]["login"] == f"{mandate.GITHUB_ACTIONS}[bot]" and comment["body"].startswith(mandate.COMMENT_MARKER):
+            return comment["id"]
+    return None
+
+
+def _post_comment(token: str, repo: str, number: int, body: str) -> None:
+    found = own_comment(_gh(token, f"repos/{repo}/issues/{number}/comments?per_page={PER_PAGE}"))
+    if found:
+        _gh(token, f"repos/{repo}/issues/comments/{found}", "--method", "PATCH", "-f", f"body={body}")
+    else:
+        _gh(token, f"repos/{repo}/issues/{number}/comments", "--method", "POST", "-f", f"body={body}")
 
 
 def conclusion(outcome: str) -> str:
@@ -380,14 +405,24 @@ def main() -> int:
         mandate.check_details(decision),
     )
     print(mandate.receipt_text(decision))
+    merged_as = closed_issue = None
+    failed = False
     if should_merge(decision):
         try:
-            _merge(token, repo, decision.pr, sha)
+            merged_as = _merge(token, repo, decision.pr, sha)
+            print(f"Merged PR #{decision.pr} at {sha[:7]} as {merged_as[:7]}")
+            _close_issue(token, repo, decision.intent.issue, decision.pr, merged_as)
+            closed_issue = decision.intent.issue
+            print(f"Closed issue #{closed_issue}")
         except Exception as error:  # only its type, as above
-            print(f"Authorized, but the merge failed: {type(error).__name__}")
-            return 1
-        print(f"Merged PR #{decision.pr} at {sha[:7]}")
-    return 0
+            print(f"Authorized, but the merge or closing the issue failed: {type(error).__name__}")
+            failed = True
+    try:
+        _post_comment(token, repo, decision.pr, mandate.pr_comment(decision, merged_as, closed_issue))
+    except Exception as error:
+        print(f"The comment couldn't be posted: {type(error).__name__}")
+        failed = True
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":

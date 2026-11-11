@@ -77,6 +77,8 @@ A failed read never counts as having no intents. The token for that repo is shor
 
 `run.py` runs one decision from a workflow on `main`, and it's the only part that talks to GitHub. It gathers the PR's changed files, CI results and linked issue, runs the acceptance tests, decides, and posts the receipt as the `mandate/decision` check. That check passes only on `AUTHORIZE`, because a required check also passes on neutral or skipped.
 
+It also writes one comment at the front of the PR, and updates it on every new commit. The comment gives the outcome, a table of the proofs, the Judge's reason and what to do next, with the receipt folded away. The reason is model text, so every markdown character in it is escaped, and no link, mention or formatting survives. Nothing Mandate posts names the Judge's model, which can change at any time. After a merge, it comments on the linked issue and closes it, because a closing keyword doesn't fire for merges made with the workflow's own token.
+
 Only the receipt is ever printed or posted. An Actions log on a public repo is public, so the acceptance tests' output is dropped, and if a run fails, only the error's type is shown. Those tests get no token. Anything that can't be read in full, such as a short list of changed files, stops the decision rather than being guessed at.
 
 ## The Judge
