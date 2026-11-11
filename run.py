@@ -227,8 +227,9 @@ def _judged(
         return None, "The change is too large to judge."
     try:
         reply = ask_judge(delegation.judge_model, mandate.judge_prompt(intent, diff))
-    except Exception:
-        return None, "The model gave no answer."
+    except Exception as error:  # its text could quote private content, so only its kind is shown
+        status = f" {error.status_code}" if isinstance(error, anthropic.APIStatusError) else ""
+        return None, f"The model gave no answer ({type(error).__name__}{status})."
     return mandate.read_score(reply), reply
 
 

@@ -79,7 +79,7 @@ Only the receipt is ever printed or posted. An Actions log on a public repo is p
 
 ## The Judge
 
-When everything else has passed and `judge_model` isn't `none`, `run.py` asks the model. A `claude-*` name goes to Anthropic's API, using the `ANTHROPIC_API_KEY` secret; any other name goes to a local model through Ollama's OpenAI-compatible API. It sends the intent, with test names removed, and the PR's diff. The model's reply shows on the check for debugging, and only its score counts. A failed call, an unusable reply, or a diff over `MAX_DIFF_CHARS` gives no score, so nothing can pass by it. A Claude answer that didn't finish, such as a refusal, also gives no score.
+When everything else has passed and `judge_model` isn't `none`, `run.py` asks the model. A `claude-*` name goes to Anthropic's API, using the `ANTHROPIC_API_KEY` secret; any other name goes to a local model through Ollama's OpenAI-compatible API. It sends the intent, with test names removed, and the PR's diff. The model's reply shows on the check for debugging, and only its score counts. A failed call, an unusable reply, or a diff over `MAX_DIFF_CHARS` gives no score, so nothing can pass by it. A Claude answer that didn't finish, such as a refusal, also gives no score. A failed call shows only the error's kind and HTTP status, because its text could quote the intent.
 
 Each commit keeps its first score for a given model and intent, so a rerun can't re-roll it. A low score goes back to the agent, and the third refusal on a pull request comes to the owner, after which the model isn't asked again.
 
