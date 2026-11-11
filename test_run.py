@@ -484,3 +484,49 @@ def test_a_rerun_of_a_third_refusal_keeps_its_score_and_its_count():
     assert decision.outcome == "ESCALATE"
     assert decision.judge_score == 0.4
     assert decision.reasons[0].detail == "the Judge has refused this pull request 3 times"
+
+
+class FakeClaude:
+    def __init__(self, stop_reason, api_key):
+        self.stop_reason, self.api_key, self.sent = stop_reason, api_key, {}
+        self.messages = self
+
+    def create(self, **request):
+        self.sent = request
+        block = type("Block", (), {"type": "text", "text": '{"score": 0.9, "reason": "r"}'})
+        return type("Response", (), {"stop_reason": self.stop_reason, "content": [block]})
+
+
+@pytest.fixture
+def claude(monkeypatch):
+    made = []
+
+    def make(stop_reason="end_turn"):
+        monkeypatch.setattr(run.anthropic, "Anthropic", lambda api_key: made.append(FakeClaude(stop_reason, api_key)) or made[-1])
+        return made
+
+    return make
+
+
+def test_claude_models_go_to_anthropic_with_the_key_and_the_judge_prompt(claude, monkeypatch):
+    made = claude()
+    monkeypatch.setattr(run, "ask_local_model", lambda model, prompt: pytest.fail("asked the local server"))
+    assert run.asker("k")("claude-opus-5-5", "the prompt") == '{"score": 0.9, "reason": "r"}'
+    assert made[0].api_key == "k"
+    assert made[0].sent["model"] == "claude-opus-5-5"
+    assert made[0].sent["system"] == mandate.JUDGE_SYSTEM
+    assert made[0].sent["messages"] == [{"role": "user", "content": "the prompt"}]
+
+
+def test_other_models_go_to_the_local_server(claude, monkeypatch):
+    made = claude()
+    monkeypatch.setattr(run, "ask_local_model", lambda model, prompt: f"{model}:{prompt}")
+    assert run.asker("k")("qwen2.5-coder:3b", "p") == "qwen2.5-coder:3b:p"
+    assert made == []
+
+
+@pytest.mark.parametrize("stop_reason", ["refusal", "max_tokens"])
+def test_an_unfinished_claude_answer_gives_no_reply(claude, stop_reason):
+    claude(stop_reason)
+    with pytest.raises(RuntimeError):
+        run.asker("k")("claude-opus-5-5", "p")
