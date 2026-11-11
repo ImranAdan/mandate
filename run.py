@@ -302,7 +302,8 @@ def own_comment(comments: list[dict]) -> int | None:
 
 
 def _post_comment(token: str, repo: str, number: int, body: str) -> None:
-    found = own_comment(_gh(token, f"repos/{repo}/issues/{number}/comments?per_page={PER_PAGE}"))
+    pages = _gh(token, f"repos/{repo}/issues/{number}/comments?per_page={PER_PAGE}", "--paginate", "--slurp")
+    found = own_comment([comment for page in pages for comment in page])
     if found:
         _gh(token, f"repos/{repo}/issues/comments/{found}", "--method", "PATCH", "-f", f"body={body}")
     else:
