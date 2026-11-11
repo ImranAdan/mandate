@@ -898,7 +898,7 @@ def test_a_merged_pull_request_says_so_and_names_the_issue_it_closed():
     assert "| Hidden acceptance tests | ✅ 5 of 5 passed |" in comment
     assert "| Reserved paths | ✅ None changed |" in comment
     assert "| JudgeScore | ✅ **0.88**, needs 0.8 |" in comment
-    assert "> **The Judge:** Does what was asked\\." in comment
+    assert "> **The Judge:** `Does what was asked.`" in comment
     assert "**Next:**" not in comment
 
 
@@ -931,19 +931,17 @@ def test_other_outcomes_show_what_held_them_up(kwargs, headline, row):
     assert row in comment
 
 
-def test_the_judges_reason_cant_link_mention_or_format():
-    reason = "See [docs](https://evil.example) @owner `x` <img src=y> **bold**"
+def test_the_judges_reason_is_shown_as_code_so_github_processes_none_of_it():
+    reason = "See [x](https://e.example) @owner #7 GH-1 :smile: $\\alpha$ `tick` " + "a" * 40
     comment = mandate.pr_comment(decide(load(LIVE), score=0.9, judge_response=json.dumps({"score": 0.9, "reason": reason})))
     quoted = next(line for line in comment.splitlines() if line.startswith("> **The Judge:**")).removeprefix("> **The Judge:** ")
-    assert re.search(r"(?<!\\)[\[\]()<>@*`]", quoted) is None  # every special character is escaped
-    assert quoted.startswith("See \\[docs\\]\\(https\\://evil\\.example\\) \\@\u2060owner")
+    assert quoted.startswith("`") and quoted.endswith("`") and quoted.count("`") == 2
+    assert "@owner #7 GH-1 :smile:" in quoted
 
 
-def test_the_judges_reason_cant_mention_anyone_or_reference_an_issue():
-    comment = mandate.pr_comment(decide(load(LIVE), score=0.9, judge_response='{"score": 0.9, "reason": "Ping @owner about #7."}'))
-    quoted = next(line for line in comment.splitlines() if line.startswith("> **The Judge:**"))
-    assert "@owner" not in quoted and "#7" not in quoted  # the receipt keeps them, in a code block GitHub doesn't link
-    assert "@\u2060owner" in quoted and "#\u20607" in quoted
+def test_a_reserved_path_in_the_headline_is_code():
+    comment = mandate.pr_comment(decide(load(LIVE), paths=(".github/see www.evil.example/login",), score=0.9))
+    assert "Commit `aaaaaaa`: `.github/see www.evil.example/login`." in comment
 
 
 def test_nothing_shows_as_checked_when_the_settings_cant_be_used():

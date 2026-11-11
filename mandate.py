@@ -557,7 +557,6 @@ NEXT = {
     "ESCALATE": "The owner decides.",
     "VERIFY": "Nothing to do yet. Mandate decides again after the next CI run.",
 }
-MARKDOWN = re.compile(r"([\\`*_{}\[\]()<>#+\-.!|@~&:])")
 
 
 def pr_comment(decision: Decision, merged_as: str | None = None, closed_issue: int | None = None) -> str:
@@ -578,7 +577,9 @@ def pr_comment(decision: Decision, merged_as: str | None = None, closed_issue: i
             f"The Judge refused commit {sha}. This is refusal {count} of {REFUSAL_LIMIT}. After the last, the pull request goes to the owner.",
         ]
     else:
-        lines = [f"### {ICONS[decision.outcome]} Mandate: {HEADLINES[decision.outcome]}", "", f"Commit {sha}: {message(decision).split(': ', 1)[1]}"]
+        # A reserved path is the agent's text, so it goes in a code span here too.
+        found = [f"`{r.detail}`" if r.code.startswith("RESERVED:") else r.detail for r in decision.reasons if r.outcome == decision.outcome]
+        lines = [f"### {ICONS[decision.outcome]} Mandate: {HEADLINES[decision.outcome]}", "", f"Commit {sha}: {'; '.join(found)}."]
 
     threshold = decision.delegation.judge_threshold if decision.delegation else None
     score = decision.judge_score
@@ -628,16 +629,15 @@ def _receipt_for_comment(decision: Decision) -> str:
 
 
 def _judge_reason(response: str | None) -> str | None:
-    """The model's reason, as plain text: it's untrusted, so no markdown, link or mention survives."""
+    """The model's reason in a code span: it's untrusted, and GitHub links mentions, references, commits,
+    emoji and maths after rendering, which no escaping stops. Inside code, none of it is processed."""
     try:
         reason = json.loads(response or "").get("reason")
     except (json.JSONDecodeError, AttributeError):
         return None
     if not isinstance(reason, str) or not reason.strip():
         return None
-    # GitHub links @mentions and #references after rendering, so a backslash alone doesn't stop them;
-    # an invisible word joiner after each does.
-    return MARKDOWN.sub(r"\\\1", _shown_response(reason)).replace("@", "@\u2060").replace("#", "#\u2060")
+    return f"`{_shown_response(reason)}`"
 
 
 def receipt_text(decision: Decision) -> str:
