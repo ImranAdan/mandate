@@ -24,7 +24,7 @@ PR text is never an input, and a `JudgeScore` can refuse a merge but can't autho
 | Setting | Meaning | If missing |
 |---|---|---|
 | `repository` | The repo these settings are for | Refused |
-| `dry_run` | When true, record decisions and merge nothing | `true`, with a warning |
+| `dry_run` | When true, record decisions and merge nothing. When false, `AUTHORIZE` merges that exact commit | `true`, with a warning |
 | `judge_model` | The Judge's model; `none` skips it and forces `dry_run` on, with a warning | `none`, with a warning |
 | `judge_threshold` | The minimum `JudgeScore`, from 0 to 1 | `0.8` |
 | `judge_reads_pr_text` | Whether the Judge also reads the PR's title and description | `false` |

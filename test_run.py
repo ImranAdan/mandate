@@ -540,3 +540,12 @@ def test_claude_is_not_asked_without_a_key(claude, key):
     with pytest.raises(RuntimeError):
         run.asker(key)("claude-opus-5-5", "p")
     assert made == []
+
+
+@pytest.mark.parametrize(
+    "outcome, dry_run, merges",
+    [("AUTHORIZE", False, True), ("AUTHORIZE", True, False), ("VERIFY", False, False), ("BLOCK", False, False), ("ESCALATE", False, False)],
+)
+def test_only_an_authorize_outside_a_dry_run_merges(outcome, dry_run, merges):
+    decision = mandate.Decision(None, 7, SHA, outcome, (), None, dry_run)
+    assert run.should_merge(decision) is merges

@@ -73,10 +73,10 @@ sequenceDiagram
     WF->>Model: If all else passed, ask for a score on the intent and diff
     Model-->>WF: JudgeScore and its reason
     WF->>PR: Post the decision as the mandate/decision check
-    Note over WF,PR: In a dry run, nothing merges
+    WF->>PR: Outside a dry run, merge that exact commit on AUTHORIZE
 ```
 
-The last stage adds the merge: after `AUTHORIZE`, Mandate merges and reruns the tests on the merge commit.
+Outside a dry run, `AUTHORIZE` merges the exact commit that was decided. GitHub refuses the merge if the branch has moved on since. Rerunning the tests on the merge commit comes later.
 
 ## How a decision is made
 

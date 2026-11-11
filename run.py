@@ -268,6 +268,16 @@ def asker(key: str | None) -> Callable[[str, str], str]:
     return lambda model, prompt: ask_claude(model, prompt, key) if model.startswith("claude-") else ask_local_model(model, prompt)
 
 
+def should_merge(decision: mandate.Decision) -> bool:
+    """Only an AUTHORIZE outside a dry run merges."""
+    return decision.outcome == "AUTHORIZE" and not decision.dry_run
+
+
+def _merge(token: str, repo: str, number: int, sha: str) -> None:
+    """Merge exactly this commit. GitHub refuses if the branch has moved on since."""
+    _gh(token, f"repos/{repo}/pulls/{number}/merge", "--method", "PUT", "-f", f"sha={sha}", "-f", "merge_method=merge")
+
+
 def conclusion(outcome: str) -> str:
     """Only AUTHORIZE passes, because a required check also passes on neutral or skipped."""
     return "success" if outcome == "AUTHORIZE" else "failure"
@@ -364,6 +374,13 @@ def main() -> int:
         mandate.check_details(decision),
     )
     print(mandate.receipt_text(decision))
+    if should_merge(decision):
+        try:
+            _merge(token, repo, decision.pr, sha)
+        except Exception as error:  # only its type, as above
+            print(f"Authorized, but the merge failed: {type(error).__name__}")
+            return 1
+        print(f"Merged PR #{decision.pr} at {sha[:7]}")
     return 0
 
 
