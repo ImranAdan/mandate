@@ -72,8 +72,9 @@ sequenceDiagram
     Box-->>WF: Responses
     WF->>Model: If all else passed, ask for a score on the intent and diff
     Model-->>WF: JudgeScore and its reason
-    WF->>PR: Post the decision as the mandate/decision check, and as one comment it keeps updated
+    WF->>PR: Post the decision as the mandate/decision check
     WF->>PR: Outside a dry run, merge that exact commit on AUTHORIZE, then close the linked issue
+    WF->>PR: Post the decision and what happened as one comment, kept updated
 ```
 
 Outside a dry run, `AUTHORIZE` merges the exact commit that was decided. GitHub refuses the merge if the branch has moved on since. Rerunning the tests on the merge commit comes later.
