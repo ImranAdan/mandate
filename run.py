@@ -167,7 +167,7 @@ def evaluate(
     refusals = prior_refusals(records, sha)
     if refusals >= mandate.REFUSAL_LIMIT:
         return decide(refusals=refusals)
-    earlier = earlier_score(records, sha, delegation.judge_model, intent.commit)
+    earlier = earlier_score(records, sha, delegation.judge_model, intent.commit, delegation.judge_threshold)
     if earlier:
         return decide(earlier["judge_score"], earlier.get("judge_response"), refusals)
     return decide(*_judged(delegation, intent, number, read_diff, ask_judge), refusals)
@@ -202,14 +202,20 @@ def prior_refusals(records: list[dict], sha: str) -> int:
     )
 
 
-def earlier_score(records: list[dict], sha: str, model: str, intent_commit: str) -> dict | None:
-    """The newest score for this commit from this model and intent, so a rerun can't re-roll it."""
+def earlier_score(records: list[dict], sha: str, model: str, intent_commit: str, threshold: float) -> dict | None:
+    """The newest refusal for this commit from this model and intent, so a rerun can't re-roll it.
+
+    A passing score is never reused, because a workflow on any branch can forge one
+    in this history. The Judge is asked again instead.
+    """
     for record in records:
+        score = record.get("judge_score")
         if (
             record.get("commit") == sha
             and record.get("judge_model") == model
             and record.get("intent_commit") == intent_commit
-            and record.get("judge_score") is not None
+            and type(score) in (int, float)
+            and score < threshold
         ):
             return record
     return None
@@ -266,6 +272,16 @@ def ask_claude(model: str, prompt: str, key: str) -> str:
 def asker(key: str | None) -> Callable[[str, str], str]:
     """The adapter for a model name: claude-* goes to Anthropic, anything else to the local server."""
     return lambda model, prompt: ask_claude(model, prompt, key) if model.startswith("claude-") else ask_local_model(model, prompt)
+
+
+def should_merge(decision: mandate.Decision) -> bool:
+    """Only an AUTHORIZE outside a dry run merges."""
+    return decision.outcome == "AUTHORIZE" and not decision.dry_run
+
+
+def _merge(token: str, repo: str, number: int, sha: str) -> None:
+    """Merge exactly this commit. GitHub refuses if the branch has moved on since."""
+    _gh(token, f"repos/{repo}/pulls/{number}/merge", "--method", "PUT", "-f", f"sha={sha}", "-f", "merge_method=merge")
 
 
 def conclusion(outcome: str) -> str:
@@ -364,6 +380,13 @@ def main() -> int:
         mandate.check_details(decision),
     )
     print(mandate.receipt_text(decision))
+    if should_merge(decision):
+        try:
+            _merge(token, repo, decision.pr, sha)
+        except Exception as error:  # only its type, as above
+            print(f"Authorized, but the merge failed: {type(error).__name__}")
+            return 1
+        print(f"Merged PR #{decision.pr} at {sha[:7]}")
     return 0
 
 

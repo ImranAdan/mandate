@@ -402,11 +402,18 @@ def test_a_commit_keeps_its_first_score():
     assert decision.judge_response == "earlier"
 
 
-def test_the_newest_earlier_score_is_used():
+def test_an_earlier_refusal_wins_over_a_later_pass():
     newest, oldest = receipt(score=0.9, code=None, response="newest"), receipt(score=0.4, response="oldest")
     decision, asked = judged(earlier={SHA: [newest, oldest]})
     assert asked == []
-    assert decision.judge_score == 0.9
+    assert decision.judge_score == 0.4
+
+
+@pytest.mark.parametrize("forged", [0.99, 1, True, "0.1"])
+def test_an_earlier_pass_is_never_reused_because_it_could_be_forged(forged):
+    decision, asked = judged(earlier={SHA: [receipt(score=forged, code=None)]}, reply='{"score": 0.5, "reason": "Asked again."}')
+    assert len(asked) == 1
+    assert decision.judge_score == 0.5
 
 
 @pytest.mark.parametrize(
@@ -540,3 +547,12 @@ def test_claude_is_not_asked_without_a_key(claude, key):
     with pytest.raises(RuntimeError):
         run.asker(key)("claude-opus-5-5", "p")
     assert made == []
+
+
+@pytest.mark.parametrize(
+    "outcome, dry_run, merges",
+    [("AUTHORIZE", False, True), ("AUTHORIZE", True, False), ("VERIFY", False, False), ("BLOCK", False, False), ("ESCALATE", False, False)],
+)
+def test_only_an_authorize_outside_a_dry_run_merges(outcome, dry_run, merges):
+    decision = mandate.Decision(None, 7, SHA, outcome, (), None, dry_run)
+    assert run.should_merge(decision) is merges
