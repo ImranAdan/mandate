@@ -1,6 +1,7 @@
 import base64
 import json
 
+import httpx2
 import pytest
 
 import mandate
@@ -354,7 +355,8 @@ def test_the_model_is_not_asked_when_anything_else_failed(kwargs):
 @pytest.mark.parametrize(
     "kwargs, shown",
     [
-        ({"reply": RuntimeError("private detail")}, "The model gave no answer."),
+        ({"reply": RuntimeError("private detail")}, "The model gave no answer (RuntimeError)."),
+        ({"reply": run.anthropic.AuthenticationError("private detail", response=httpx2.Response(401, request=httpx2.Request("POST", "https://x")), body=None)}, "The model gave no answer (AuthenticationError 401)."),
         ({"diff": RuntimeError("private detail")}, "The change couldn't be read."),
         ({"diff": "x" * (mandate.MAX_DIFF_CHARS + 1)}, "The change is too large to judge."),
         ({"reply": "not json"}, "not json"),
