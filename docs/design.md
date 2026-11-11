@@ -115,7 +115,7 @@ flowchart TD
 
 The judge only runs once everything else has passed. It reads the intent, with test names removed, and the PR's diff, and answers with a `JudgeScore` and a reason on a [fixed scale](#the-score-scale).
 
-- **Where it runs:** set by `judge_model`, and changing model is a settings change. A `claude-*` name goes to Anthropic's API with the `ANTHROPIC_API_KEY` secret: Anthropic doesn't train on API data and deletes it within 30 days, or up to 2 years if its safety systems flag it. Any other name runs in Ollama on the same runner, so the intent never leaves it.
+- **Where it runs:** set by `judge_model`, and changing model is a settings change. A `claude-*` name goes to Anthropic's API with the `ANTHROPIC_API_KEY` secret: Anthropic doesn't train on API data unless the organization opts in, and deletes it within 30 days, or up to 2 years if its safety systems flag it, or longer if the law requires. Any other name runs in Ollama on the same runner, so the intent never leaves it.
 - **Its response:** it shows on the check for debugging, on one line in a block it can't close. Only the score counts.
 - **No usable answer:** a failed call, an unusable reply, or a diff over 40,000 characters gives no score, so nothing can pass by it.
 - **One score per commit:** a rerun keeps the commit's first score for that model and intent, so it can't re-roll.

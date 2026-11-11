@@ -248,6 +248,8 @@ def ask_local_model(model: str, prompt: str) -> str:
 
 def ask_claude(model: str, prompt: str, key: str) -> str:
     """Ask a Claude model through Anthropic's API. Anything but a finished answer raises, so it gives no score."""
+    if not key:  # without it the SDK would look for other credentials, possibly another account's
+        raise RuntimeError("no ANTHROPIC_API_KEY")
     response = anthropic.Anthropic(api_key=key).messages.create(
         model=model,
         max_tokens=16000,

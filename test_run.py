@@ -530,3 +530,11 @@ def test_an_unfinished_claude_answer_gives_no_reply(claude, stop_reason):
     claude(stop_reason)
     with pytest.raises(RuntimeError):
         run.asker("k")("claude-opus-5-5", "p")
+
+
+@pytest.mark.parametrize("key", [None, ""])
+def test_claude_is_not_asked_without_a_key(claude, key):
+    made = claude()
+    with pytest.raises(RuntimeError):
+        run.asker(key)("claude-opus-5-5", "p")
+    assert made == []
