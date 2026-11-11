@@ -167,7 +167,7 @@ def evaluate(
     refusals = prior_refusals(records, sha)
     if refusals >= mandate.REFUSAL_LIMIT:
         return decide(refusals=refusals)
-    earlier = earlier_score(records, sha, delegation.judge_model, intent.commit)
+    earlier = earlier_score(records, sha, delegation.judge_model, intent.commit, delegation.judge_threshold)
     if earlier:
         return decide(earlier["judge_score"], earlier.get("judge_response"), refusals)
     return decide(*_judged(delegation, intent, number, read_diff, ask_judge), refusals)
@@ -202,14 +202,20 @@ def prior_refusals(records: list[dict], sha: str) -> int:
     )
 
 
-def earlier_score(records: list[dict], sha: str, model: str, intent_commit: str) -> dict | None:
-    """The newest score for this commit from this model and intent, so a rerun can't re-roll it."""
+def earlier_score(records: list[dict], sha: str, model: str, intent_commit: str, threshold: float) -> dict | None:
+    """The newest refusal for this commit from this model and intent, so a rerun can't re-roll it.
+
+    A passing score is never reused, because a workflow on any branch can forge one
+    in this history. The Judge is asked again instead.
+    """
     for record in records:
+        score = record.get("judge_score")
         if (
             record.get("commit") == sha
             and record.get("judge_model") == model
             and record.get("intent_commit") == intent_commit
-            and record.get("judge_score") is not None
+            and type(score) in (int, float)
+            and score < threshold
         ):
             return record
     return None
