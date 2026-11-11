@@ -37,6 +37,8 @@ Any other setting makes the whole file invalid, and then every pull request come
 
 An intent has a title, one `Issue:` line, and any sections. Everything is free text except the bullets: each one names a test or says `Judge only`, apart from those under `Out of scope`.
 
+Only the test names are private. Write nothing else in an intent that you wouldn't put in the public issue, because the Judge reads the rest and its reason is public.
+
 ```markdown
 # Archive old notes
 

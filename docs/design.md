@@ -200,7 +200,7 @@ The finish line is one real agent PR through stage 3 with no owner action during
 - **Red checks:** everything except `AUTHORIZE` shows as a failed check, even when it's only waiting, because GitHub treats [`neutral` and `skipped` as passing](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-protected-branches/about-protected-branches) for a required check.
 - **Old base commits:** the engine doesn't prove which base commit CI tested. Stage 3 relies on GitHub's [up-to-date requirement](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-protected-branches/about-protected-branches) for that.
 - **Review:** most of this code has had no independent review.
-- **The judge's reason is public:** it could quote the intent's wording, though test names never reach the model.
+- **The judge's reason is public:** it could quote the intent's wording, though test names never reach the model. So the owner's rule is that only test names in an intent are private, and the rest must be fine to make public.
 
 ## Sources
 
