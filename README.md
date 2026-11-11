@@ -77,13 +77,15 @@ A failed read never counts as having no intents. The token for that repo is shor
 
 `run.py` runs one decision from a workflow on `main`, and it's the only part that talks to GitHub. It gathers the PR's changed files, CI results and linked issue, runs the acceptance tests, decides, and posts the receipt as the `mandate/decision` check. That check passes only on `AUTHORIZE`, because a required check also passes on neutral or skipped.
 
+It also writes one comment at the front of the PR, and updates it on each new commit that reaches a decision. A commit refused because another open PR shares it, or a run that stops on an error, posts only the check and leaves the comment as it was, so the comment names the commit it's about. The comment gives the outcome, a table of the proofs, the Judge's reason and what to do next, with the receipt folded away. The reason is model text, so it's shown as code: GitHub links mentions, issue references and commits after rendering, which escaping can't stop, but it processes nothing inside code. Nothing Mandate posts names the Judge's model, which can change at any time. After a merge, it comments on the linked issue and closes it, because a closing keyword doesn't fire for merges made with the workflow's own token.
+
 Only the receipt is ever printed or posted. An Actions log on a public repo is public, so the acceptance tests' output is dropped, and if a run fails, only the error's type is shown. Those tests get no token. Anything that can't be read in full, such as a short list of changed files, stops the decision rather than being guessed at.
 
 ## The Judge
 
 When everything else has passed and `judge_model` isn't `none`, `run.py` asks the model. A `claude-*` name goes to Anthropic's API, using the `ANTHROPIC_API_KEY` secret; any other name goes to a local model through Ollama's OpenAI-compatible API. It sends the intent, with test names removed, and the PR's diff. The model's reply shows on the check for debugging, and only its score counts. A failed call, an unusable reply, or a diff over `MAX_DIFF_CHARS` gives no score, so nothing can pass by it. A Claude answer that didn't finish, such as a refusal, also gives no score. A failed call shows only the error's kind and HTTP status, because its text could quote the intent.
 
-A refused commit keeps its refusal for a given model and intent, so a rerun can't re-roll it into a pass. A passing score is never reused, because it could be forged, so a rerun asks the Judge again. A low score goes back to the agent, and the third refusal on a pull request comes to the owner, after which the model isn't asked again.
+A refused commit keeps its refusal for that intent, even if the settings or model change, so a rerun can't re-roll it into a pass. A passing score is never reused, because it could be forged, so a rerun asks the Judge again. A low score goes back to the agent, and the third refusal on a pull request comes to the owner, after which the model isn't asked again.
 
 ## Known limits
 

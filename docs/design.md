@@ -73,7 +73,8 @@ sequenceDiagram
     WF->>Model: If all else passed, ask for a score on the intent and diff
     Model-->>WF: JudgeScore and its reason
     WF->>PR: Post the decision as the mandate/decision check
-    WF->>PR: Outside a dry run, merge that exact commit on AUTHORIZE
+    WF->>PR: Outside a dry run, merge that exact commit on AUTHORIZE, then close the linked issue
+    WF->>PR: Post the decision and what happened as one comment, kept updated
 ```
 
 Outside a dry run, `AUTHORIZE` merges the exact commit that was decided. GitHub refuses the merge if the branch has moved on since. Rerunning the tests on the merge commit comes later.
@@ -116,9 +117,9 @@ flowchart TD
 The judge only runs once everything else has passed. It reads the intent, with test names removed, and the PR's diff, and answers with a `JudgeScore` and a reason on a [fixed scale](#the-score-scale).
 
 - **Where it runs:** set by `judge_model`, and changing model is a settings change. A `claude-*` name goes to Anthropic's API with the `ANTHROPIC_API_KEY` secret: Anthropic doesn't train on API data unless the organization opts in, and deletes it within 30 days, or up to 2 years if its safety systems flag it, or longer if the law requires. Any other name runs in Ollama on the same runner, so the intent never leaves it.
-- **Its response:** it shows on the check for debugging, on one line in a block it can't close. Only the score counts.
+- **Its response:** it shows on the check for debugging, on one line in a block it can't close, and its reason shows as code in Mandate's PR comment, so nothing in it becomes a link or mention. Only the score counts. Nothing Mandate posts names the model.
 - **No usable answer:** a failed call, an unusable reply, or a diff over 40,000 characters gives no score, so nothing can pass by it.
-- **One score per commit:** a rerun keeps a commit's refusal for that model and intent, so it can't re-roll it into a pass. A pass is never reused, because a branch's workflow could forge one.
+- **One score per commit:** a rerun keeps a commit's refusal for that intent, even if the settings or model change, so it can't re-roll it into a pass. A pass is never reused, because a branch's workflow could forge one.
 - **Refusals:** a low score goes back to the agent. The third refused commit on a PR comes to the owner, and the model isn't asked again.
 
 ### The score scale

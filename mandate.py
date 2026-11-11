@@ -147,6 +147,7 @@ class Decision:
     intent: Intent | None = None
     judge_response: str | None = None
     acceptance: Acceptance | None = None
+    prior_refusals: int = 0
 
 
 def load_delegation(text: str, repository: str, commit: str) -> Delegation:
@@ -372,7 +373,7 @@ def decide(
     outcome = reasons[0].outcome if reasons else "AUTHORIZE"
     bound = intent if isinstance(intent, Intent) else None
     return Decision(
-        delegation, pr, head_sha, outcome, tuple(reasons), score, delegation.dry_run, bound, judge_response, acceptance
+        delegation, pr, head_sha, outcome, tuple(reasons), score, delegation.dry_run, bound, judge_response, acceptance, prior_refusals
     )
 
 
@@ -522,10 +523,11 @@ def _shown_response(response: str) -> str:
     return shown if len(shown) <= MAX_RESPONSE_SHOWN else f"{shown[:MAX_RESPONSE_SHOWN]} [cut]"
 
 
-def check_details(decision: Decision) -> str:
+def check_details(decision: Decision, summary: str = "Full receipt") -> str:
     """The full receipt, folded away below the summary."""
-    record = json.dumps(receipt_record(decision), indent=2)
-    return f"<details>\n<summary>Full receipt</summary>\n\n```json\n{record}\n```\n\n</details>\n"
+    # A backtick in the model's reply could close the fence, so it's escaped; JSON reads it back unchanged.
+    record = json.dumps(receipt_record(decision), indent=2).replace("`", "\\u0060")
+    return f"<details>\n<summary>{summary}</summary>\n\n```json\n{record}\n```\n\n</details>\n"
 
 
 def read_receipt(details: str | None) -> dict | None:
@@ -538,6 +540,104 @@ def read_receipt(details: str | None) -> dict | None:
     except json.JSONDecodeError:
         return None
     return record if isinstance(record, dict) else None
+
+
+COMMENT_MARKER = "<!-- mandate:decision -->"
+MAX_COMMENT_RECEIPT = 50_000  # GitHub caps a comment at 65,536 characters
+PROOF_SHOWN = {  # worst first
+    "CHECK_WRONG_SOURCE": "❌ From the wrong source",
+    "PROOF_FAILED": "❌ Failed",
+    "PROOF_CONFLICT": "❌ Conflicting results",
+    "PROOF_PENDING": "⏳ Still running",
+    "PROOF_MISSING": "⏳ Missing",
+}
+HEADLINES = {"BLOCK": "not ready to merge", "ESCALATE": "this needs the owner", "VERIFY": "waiting for proof"}
+NEXT = {
+    "BLOCK": "Fix the change and push a new commit. Mandate decides again after CI finishes.",
+    "ESCALATE": "The owner decides.",
+    "VERIFY": "Nothing to do yet. Mandate decides again after the next CI run.",
+}
+
+
+def pr_comment(decision: Decision, merged_as: str | None = None, closed_issue: int | None = None) -> str:
+    """The decision as one comment at the front of the pull request. It never names the Judge's model."""
+    sha = f"`{decision.head_sha[:7]}`"
+    codes = {reason.code for reason in decision.reasons}
+    if decision.outcome == "AUTHORIZE" and merged_as:
+        closed = f" and closed issue #{closed_issue}" if closed_issue else ""
+        lines = ["### ✅ Mandate merged this pull request", "", f"Commit {sha} passed every proof, so Mandate merged it as `{merged_as[:7]}`{closed}."]
+    elif decision.outcome == "AUTHORIZE":
+        why = "This is a dry run, so it wasn't merged." if decision.dry_run else "The merge didn't go through."
+        lines = ["### ✅ Ready to merge", "", f"Commit {sha} passed every proof. {why}"]
+    elif "JUDGE_SCORE_LOW" in codes:
+        count = decision.prior_refusals + 1
+        lines = [
+            "### ❌ Mandate: not ready to merge",
+            "",
+            f"The Judge refused commit {sha}. This is refusal {count} of {REFUSAL_LIMIT}. After the last, the pull request goes to the owner.",
+        ]
+    else:
+        # A reserved path is the agent's text, so it goes in a code span here too.
+        found = [f"`{r.detail}`" if r.code.startswith("RESERVED:") else r.detail for r in decision.reasons if r.outcome == decision.outcome]
+        lines = [f"### {ICONS[decision.outcome]} Mandate: {HEADLINES[decision.outcome]}", "", f"Commit {sha}: {'; '.join(found)}."]
+
+    threshold = decision.delegation.judge_threshold if decision.delegation else None
+    score = decision.judge_score
+    if score is None:
+        judged = "⏳ Not scored"
+    else:
+        judged = f"{'✅' if threshold is not None and score >= threshold else '❌'} **{score}**, needs {threshold}"
+    acceptance = decision.acceptance
+    if acceptance is None:
+        hidden = "⏳ Not run"
+    else:
+        hidden = f"{'✅' if acceptance.passed == acceptance.total > 0 else '❌'} {acceptance.passed} of {acceptance.total} passed"
+    reserved = [reason.detail for reason in decision.reasons if reason.code.startswith("RESERVED:")]
+    ci = next((shown for code, shown in PROOF_SHOWN.items() if code in codes), "✅ Passed")
+    paths = "👤 `" + ", ".join(reserved) + "`" if reserved else "✅ None changed"
+    if decision.delegation is None:  # the settings couldn't be used, so nothing else was checked
+        ci = paths = "⏳ Not checked"
+    lines += [
+        "",
+        "| Proof | Result |",
+        "| --- | --- |",
+        f"| CI | {ci} |",
+        f"| Hidden acceptance tests | {hidden} |",
+        f"| Reserved paths | {paths} |",
+        f"| JudgeScore | {judged} |",
+    ]
+    reason = _judge_reason(decision.judge_response)
+    if reason:
+        lines += ["", f"> **The Judge:** {reason}"]
+    if decision.delegation and decision.delegation.warnings:
+        lines += ["", *(f"⚠️ {warning}" for warning in decision.delegation.warnings)]
+    if decision.outcome in NEXT:
+        lines += ["", f"**Next:** {NEXT[decision.outcome]}"]
+    lines += [
+        "",
+        _receipt_for_comment(decision),
+        "",
+        "<sub>Mandate decides each commit after CI finishes, and updates this comment on every new commit.</sub>",
+    ]
+    return "\n".join([COMMENT_MARKER, *lines]) + "\n"
+
+
+def _receipt_for_comment(decision: Decision) -> str:
+    """The receipt, unless it would push the comment past GitHub's limit; the check always has it."""
+    receipt = check_details(decision, "Receipt").rstrip("\n")
+    return receipt if len(receipt) <= MAX_COMMENT_RECEIPT else "The receipt is too long to show here. It's on the `mandate/decision` check."
+
+
+def _judge_reason(response: str | None) -> str | None:
+    """The model's reason in a code span: it's untrusted, and GitHub links mentions, references, commits,
+    emoji and maths after rendering, which no escaping stops. Inside code, none of it is processed."""
+    try:
+        reason = json.loads(response or "").get("reason")
+    except (json.JSONDecodeError, AttributeError):
+        return None
+    if not isinstance(reason, str) or not reason.strip():
+        return None
+    return f"`{_shown_response(reason)}`"
 
 
 def receipt_text(decision: Decision) -> str:
@@ -561,7 +661,6 @@ def receipt_record(decision: Decision) -> dict[str, object]:
         "delegation_commit": delegation.commit if delegation else None,
         "intent_issue": decision.intent.issue if decision.intent else None,
         "intent_commit": decision.intent.commit if decision.intent else None,
-        "judge_model": delegation.judge_model if delegation else None,
         "acceptance_passed": decision.acceptance.passed if decision.acceptance else None,
         "acceptance_total": decision.acceptance.total if decision.acceptance else None,
         "judge_score": decision.judge_score,

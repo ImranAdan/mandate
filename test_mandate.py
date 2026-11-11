@@ -1,5 +1,6 @@
 import base64
 import json
+import re
 
 import pytest
 
@@ -369,7 +370,6 @@ def test_the_record_keeps_exact_identifiers():
         "delegation_commit": DELEGATION_COMMIT,
         "intent_issue": 2,
         "intent_commit": INTENT_COMMIT,
-        "judge_model": "some-model",
         "acceptance_passed": 5,
         "acceptance_total": 5,
         "judge_score": 0.92,
@@ -389,7 +389,7 @@ def test_the_record_of_an_invalid_delegation_has_no_settings_to_name():
     assert record["delegation_commit"] is None
     assert record["intent_issue"] is None
     assert record["intent_commit"] is None
-    assert record["judge_model"] is None
+    assert "judge_model" not in record
     assert record["dry_run"] is True
     assert record["message"] == "Needs the owner: bad."
 
@@ -884,3 +884,89 @@ def test_a_receipt_reads_back_from_the_check():
 @pytest.mark.parametrize("details", ["", None, "no block", "```json\nnot json\n```", "```json\n[1]\n```"])
 def test_anything_else_is_not_a_receipt(details):
     assert mandate.read_receipt(details) is None
+
+
+# --- the comment on the pull request ------------------------------------------
+
+
+def test_a_merged_pull_request_says_so_and_names_the_issue_it_closed():
+    decision = decide(load(LIVE), score=0.88, judge_response='{"score": 0.88, "reason": "Does what was asked."}')
+    comment = mandate.pr_comment(decision, merged_as="c" * 40, closed_issue=2)
+    assert comment.startswith(mandate.COMMENT_MARKER + "\n### ✅ Mandate merged this pull request\n")
+    assert "Commit `aaaaaaa` passed every proof, so Mandate merged it as `ccccccc` and closed issue #2." in comment
+    assert "| CI | ✅ Passed |" in comment
+    assert "| Hidden acceptance tests | ✅ 5 of 5 passed |" in comment
+    assert "| Reserved paths | ✅ None changed |" in comment
+    assert "| JudgeScore | ✅ **0.88**, needs 0.8 |" in comment
+    assert "> **The Judge:** `Does what was asked.`" in comment
+    assert "**Next:**" not in comment
+
+
+def test_a_refusal_counts_itself_and_says_what_to_do():
+    comment = mandate.pr_comment(decide(load(LIVE), score=0.1, prior_refusals=1))
+    assert "### ❌ Mandate: not ready to merge" in comment
+    assert "The Judge refused commit `aaaaaaa`. This is refusal 2 of 3." in comment
+    assert "| JudgeScore | ❌ **0.1**, needs 0.8 |" in comment
+    assert "**Next:** Fix the change and push a new commit." in comment
+
+
+def test_a_dry_run_says_it_did_not_merge():
+    comment = mandate.pr_comment(decide(score=0.9))
+    assert "### ✅ Ready to merge" in comment
+    assert "This is a dry run, so it wasn't merged." in comment
+
+
+@pytest.mark.parametrize(
+    "kwargs, headline, row",
+    [
+        ({}, "### ⏳ Mandate: waiting for proof", "| JudgeScore | ⏳ Not scored |"),
+        ({"paths": (".github/workflows/ci.yml",), "score": 0.9}, "### 👤 Mandate: this needs the owner", "| Reserved paths | 👤 `.github/workflows/ci.yml` |"),
+        ({"checks": (check(conclusion="failure"),)}, "### ❌ Mandate: not ready to merge", "| CI | ❌ Failed |"),
+        ({"acceptance": mandate.Acceptance(3, 5)}, "### ❌ Mandate: not ready to merge", "| Hidden acceptance tests | ❌ 3 of 5 passed |"),
+    ],
+)
+def test_other_outcomes_show_what_held_them_up(kwargs, headline, row):
+    comment = mandate.pr_comment(decide(load(LIVE), **kwargs))
+    assert headline in comment
+    assert row in comment
+
+
+def test_the_judges_reason_is_shown_as_code_so_github_processes_none_of_it():
+    reason = "See [x](https://e.example) @owner #7 GH-1 :smile: $\\alpha$ `tick` " + "a" * 40
+    comment = mandate.pr_comment(decide(load(LIVE), score=0.9, judge_response=json.dumps({"score": 0.9, "reason": reason})))
+    quoted = next(line for line in comment.splitlines() if line.startswith("> **The Judge:**")).removeprefix("> **The Judge:** ")
+    assert quoted.startswith("`") and quoted.endswith("`") and quoted.count("`") == 2
+    assert "@owner #7 GH-1 :smile:" in quoted
+
+
+def test_a_reserved_path_in_the_headline_is_code():
+    comment = mandate.pr_comment(decide(load(LIVE), paths=(".github/see www.evil.example/login",), score=0.9))
+    assert "Commit `aaaaaaa`: `.github/see www.evil.example/login`." in comment
+
+
+def test_nothing_shows_as_checked_when_the_settings_cant_be_used():
+    comment = mandate.pr_comment(decide(mandate.DelegationError("bad settings"), paths=(".github/workflows/ci.yml",)))
+    assert "| CI | ⏳ Not checked |" in comment
+    assert "| Reserved paths | ⏳ Not checked |" in comment
+
+
+def test_no_tests_run_shows_as_a_failure():
+    assert "| Hidden acceptance tests | ❌ 0 of 0 passed |" in mandate.pr_comment(decide(load(LIVE), acceptance=mandate.Acceptance(0, 0)))
+
+
+def test_a_huge_receipt_stays_on_the_check():
+    response = json.dumps({"score": 0.9, "reason": "x" * 60_000})
+    comment = mandate.pr_comment(decide(load(LIVE), score=0.9, judge_response=response))
+    assert len(comment) < 65_536
+    assert "It's on the `mandate/decision` check." in comment
+    assert "x" * 60_000 in mandate.check_details(decide(load(LIVE), score=0.9, judge_response=response))
+
+
+def test_nothing_mandate_posts_names_the_model():
+    decision = decide(load(LIVE), score=0.1, judge_response='{"score": 0.1, "reason": "No."}')
+    assert "some-model" not in mandate.pr_comment(decision)
+    assert "some-model" not in mandate.check_summary(decision) + mandate.check_details(decision)
+
+
+def test_a_score_at_the_bar_shows_as_passing():
+    assert "| JudgeScore | ✅ **0.8**, needs 0.8 |" in mandate.pr_comment(decide(load(LIVE), score=0.8))
